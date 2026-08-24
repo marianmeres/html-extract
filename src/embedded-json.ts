@@ -35,7 +35,8 @@ const DEFAULT_MAX_SCRIPT_SIZE = 2_000_000;
  * documented limit — burned ~20 s of CPU. Charging every scanned character against one
  * budget makes the scan linear in the script's length. An honest page spends one scan on
  * its single payload plus a little slack for decoy occurrences, so 4x is far more than it
- * will ever ask for; a page that wants more than that is not paying us in data.
+ * will ever ask for. When the budget does run out the key is simply missing from the
+ * result (and a `warn` says so) — a degraded answer, never a wrong one.
  */
 const SCAN_BUDGET_FACTOR = 4;
 
