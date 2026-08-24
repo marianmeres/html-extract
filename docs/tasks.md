@@ -104,6 +104,38 @@ The knobs are the module constants at the top of `src/main-content.ts` (scoring 
 - [ ] `deno task npm:build` and a Node smoke test of `.npm-dist/dist/mod.js`
 - [ ] Golden diffs reviewed
 
+## Add or change an MCP tool
+
+The tools in `mcp.ts` exist to answer "why did I get this?" — so they run the library
+with a capturing `Logger` and report its own trail rather than restating the rules.
+
+### Steps
+
+1. Add the definition to the `tools` array. `name` is kebab-case; the `description` is
+   what an agent matches intent against, so mention the words a user would actually say.
+2. `.describe()` every param — no exceptions, `tests/mcp/mcp.test.ts` asserts it.
+3. Take the document through the shared `documentParams` (`html` or `path`) and
+   `loadHtml()`, so every tool behaves the same way about input.
+4. Delegate to `src/`. If you find yourself reimplementing a rule, stop: expose what you
+   need from the module instead, or capture it from the log.
+5. Add tests to `tests/mcp/mcp.test.ts` and run `deno task test:mcp`.
+
+### Checklist
+
+- [ ] Handler returns a plain string; structured data goes through `JSON.stringify`
+- [ ] Never throws on malformed HTML — only on a genuinely unusable argument
+- [ ] No network, no writes; reading the caller's `path` is the only side effect
+- [ ] `deno check mcp.ts` (it is lint-excluded, so `deno lint` will not catch a slip)
+
+### The precedence pin
+
+`metadata-precedence` derives each chain by building a probe document from `CANDIDATES`,
+asking the library which source won, dropping it, and repeating. If you add, rename or
+reorder a source in `src/metadata.ts`, add or rename it in `CANDIDATES` too — the test
+`metadata-precedence: covers every field and never stops early` fails until you do. Do
+not weaken that assertion; it is the only thing standing between the tool and quietly
+lying to an agent.
+
 ## Release
 
 ```bash

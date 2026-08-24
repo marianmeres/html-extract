@@ -71,19 +71,19 @@ Normalized document metadata. Fully deterministic — no heuristics, no judgment
 **Precedence**, per field — explicit `<meta>`, then OpenGraph, then Twitter, then JSON-LD,
 then document fallbacks:
 
-| Field         | Chain                                                                                                                                                          |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`       | `meta[name=title]` → `og:title` → `twitter:title` → JSON-LD `headline`/`name` → `<title>` → first `<h1>`                                                       |
-| `description` | `meta[name=description]` → `og:description` → `twitter:description` → JSON-LD `description`                                                                    |
-| `canonical`   | `link[rel=canonical]` → `og:url` → JSON-LD `url`                                                                                                               |
-| `lang`        | `<html lang>` → `meta[http-equiv=content-language]` → `og:locale`                                                                                              |
-| `siteName`    | `og:site_name` → `meta[name=application-name]` → JSON-LD `publisher.name`                                                                                      |
-| `author`      | `meta[name=author]` → `article:author` → JSON-LD `author.name` → `twitter:creator`                                                                             |
-| `publishedAt` | `article:published_time` → `meta[name=date]` → `meta[name=pubdate]` → `meta[name=publish-date]` → `meta[itemprop=datePublished]` → JSON-LD → `<time datetime>` |
-| `modifiedAt`  | `article:modified_time` → `og:updated_time` → `meta[name=last-modified]` → `meta[itemprop=dateModified]` → JSON-LD `dateModified`                              |
-| `image`       | `og:image` → `og:image:url` → `twitter:image` → `twitter:image:src` → `link[rel=image_src]` → JSON-LD `image`                                                  |
-| `favicon`     | `link[rel=icon]` → `link[rel="shortcut icon"]` → `link[rel=apple-touch-icon]` → `link[rel=mask-icon]` → `/favicon.ico` (only when `url` is given)              |
-| `type`        | `og:type`                                                                                                                                                      |
+| Field         | Chain                                                                                                                                                                                                    |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`       | `meta[name=title]` → `og:title` → `twitter:title` → JSON-LD `headline`/`name` → `<title>` → first `<h1>`                                                                                                 |
+| `description` | `meta[name=description]` → `og:description` → `twitter:description` → JSON-LD `description`                                                                                                              |
+| `canonical`   | `link[rel=canonical]` → `og:url` → JSON-LD `url`                                                                                                                                                         |
+| `lang`        | `<html lang>` → `meta[http-equiv=content-language]` → `og:locale`                                                                                                                                        |
+| `siteName`    | `og:site_name` → `meta[name=application-name]` → JSON-LD `publisher.name`                                                                                                                                |
+| `author`      | `meta[name=author]` → `article:author` → JSON-LD `author.name` → `twitter:creator`                                                                                                                       |
+| `publishedAt` | `article:published_time` → `meta[name=date]` → `meta[name=pubdate]` → `meta[name=publish-date]` → `meta[itemprop=datePublished]` → JSON-LD → `<time datetime>`                                           |
+| `modifiedAt`  | `article:modified_time` → `og:updated_time` → `meta[name=last-modified]` → `meta[itemprop=dateModified]` → JSON-LD `dateModified`                                                                        |
+| `image`       | `og:image` → `og:image:url` → `twitter:image` → `twitter:image:src` → `link[rel=image_src]` → JSON-LD `image`                                                                                            |
+| `favicon`     | `link[rel~=icon]` — token-based, so `rel="shortcut icon"` matches here too and document order decides → `link[rel=apple-touch-icon]` → `link[rel=mask-icon]` → `/favicon.ico` (only when `url` is given) |
+| `type`        | `og:type`                                                                                                                                                                                                |
 
 Dates are normalized to ISO 8601 when parseable and **kept raw when not** — an
 unparseable date is still information.

@@ -1,0 +1,10 @@
+Turns an HTML string into structured data for Deno/Node: normalized metadata
+(OpenGraph, Twitter, canonical, dates, favicon) by documented precedence chains,
+JSON-LD blocks, microdata items, framework state blobs (__NEXT_DATA__, __NUXT__,
+Apollo, Redux preload), readability-style main-content extraction with boilerplate
+removed, and HTML → markdown / plain-text conversion. Also a structural `clean()` —
+explicitly NOT an XSS sanitizer — and a thin CSS-selector field picker. Pure
+functions over a string: no network, no JavaScript execution, no persistence, and
+nothing throws on malformed markup. The document layer beside
+@marianmeres/page-fetcher (transport) and @marianmeres/crawler (orchestration); it
+imports neither.

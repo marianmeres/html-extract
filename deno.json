@@ -10,8 +10,8 @@
 		]
 	},
 	"tasks": {
-		"test": "deno test --allow-read --allow-env tests/",
-		"test:watch": "deno test --watch --allow-read --allow-env tests/",
+		"test": "deno test --allow-read --allow-env --ignore=tests/mcp tests/",
+		"test:watch": "deno test --watch --allow-read --allow-env --ignore=tests/mcp tests/",
 		"doc:lint": "deno doc --lint src/mod.ts && deno check --doc src/",
 		"npm:build": "deno run -A scripts/build-npm.ts",
 		"npm:publish": "deno run -A scripts/build-npm.ts && cd ./.npm-dist && npm publish --access=public",
@@ -19,7 +19,8 @@
 		"publish": "deno publish && deno task npm:publish",
 		"rp": "deno task release -y && deno task publish",
 		"rpm": "deno task release minor -y && deno task publish",
-		"test:golden": "UPDATE_GOLDEN=1 deno test --allow-read --allow-write --allow-env tests/golden.test.ts"
+		"test:golden": "UPDATE_GOLDEN=1 deno test --allow-read --allow-write --allow-env tests/golden.test.ts",
+		"test:mcp": "deno test -A tests/mcp/"
 	},
 	"imports": {
 		"@marianmeres/html-extract": "./src/mod.ts",
@@ -38,6 +39,11 @@
 		"exclude": [
 			"tests/fixtures",
 			"docs/design.md"
+		]
+	},
+	"lint": {
+		"exclude": [
+			"mcp.ts"
 		]
 	}
 }

@@ -14,7 +14,12 @@ of the crawler, not a layer on top of it.
 - **Docs gate**: `deno task doc:lint` — `deno doc --lint` plus `deno check --doc`, which
   type-checks the code inside every `@example`.
 - **Build**: `deno task npm:build` (runs `tsc`, stricter than `deno check`).
-- **Format/lint**: `deno fmt` / `deno lint`. Tabs, `lineWidth: 90`.
+- **Format/lint**: `deno fmt` / `deno lint`. Tabs, `lineWidth: 90`. `mcp.ts` is
+  lint-excluded (the MCP convention requires inline `npm:` / `jsr:` specifiers), and
+  `tests/fixtures` is fmt-excluded (the formatter rewrites HTML and will happily repair
+  a deliberately broken document).
+- **MCP tools**: `deno task test:mcp` — gated out of `deno task test`, because `mcp.ts`
+  pulls `npm:zod` and the default suite stays hermetic and dependency-free.
 
 ## Project Structure
 
@@ -35,7 +40,11 @@ src/pick.ts           — pick
 src/extract.ts        — extract: one parse, every extractor
 tests/                — one file per module + _fixtures.ts (corpus loader, golden helper)
 tests/fixtures/<case>/input.html + expected.md|txt|json
+tests/mcp/            — the mcp.ts suite (--ignore'd out of the default run)
 scripts/build-npm.ts  — npm build; `versionizeDeps` MUST list linkedom and clog
+mcp.ts                — MCP tools: extract-preview, diagnose-content, convert-html,
+                        pick-fields, metadata-precedence
+mcp-include.txt       — the marker + blurb the local @marianmeres/mcp-server discovers by
 docs/                 — design.md (founding doc + resolutions), architecture.md,
                         conventions.md, tasks.md
 ```
@@ -70,8 +79,13 @@ docs/                 — design.md (founding doc + resolutions), architecture.m
 8. **`clean()` is not a sanitizer.** Any change there keeps the loud disclaimer in the
    JSDoc and the README. Do not add anything that makes it look more like a security
    boundary.
-9. **No second runtime dependency.** Not `turndown`, not `sanitize-html`, not `jsdom`.
-   The tree is already parsed; write the conversion.
+9. **The MCP tools quote the library, they do not paraphrase it.** Every tool in
+   `mcp.ts` runs the real functions with a capturing `Logger` and reports that trail.
+   Never reimplement a precedence chain or a scoring rule there — a second copy is a
+   copy that drifts, and `metadata-precedence` derives its chain order by elimination
+   precisely so that it cannot.
+10. **No second runtime dependency.** Not `turndown`, not `sanitize-html`, not `jsdom`.
+    The tree is already parsed; write the conversion.
 
 ## Parser quirks that bite (all handled in `_dom.ts` — read its module JSDoc)
 
@@ -93,6 +107,10 @@ docs/                 — design.md (founding doc + resolutions), architecture.m
 - [ ] `deno publish --dry-run` before anything that changes the public surface.
 - [ ] Update `src/mod.ts`, `API.md` and `tests/extract.test.ts` together when the public
       surface changes.
+- [ ] `deno task test:mcp` when touching `mcp.ts`, a metadata precedence chain, or a
+      `debug` message the tools quote — `metadata-precedence` derives its answer by
+      running the library, and its test fails loudly when the probe table in `mcp.ts`
+      no longer covers `src/metadata.ts`.
 - [ ] Review golden diffs by eye before regenerating them.
 
 ## Documentation Index
