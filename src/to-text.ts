@@ -118,7 +118,15 @@ function separatorFor(name: string): number {
  * decoding here restores what the parser owed us rather than inventing a rule.
  * `<xmp>`, `<iframe>`, `<noembed>` and `<noframes>` are *RAWTEXT*, where `&amp;` really
  * is five literal characters in every browser, and are deliberately **not** listed:
- * decoding them would corrupt what the page displays.
+ * decoding them would corrupt what the page displays. (Measured, not assumed —
+ * `<title>`, `<iframe>`, `<noembed>`, `<noframes>`, `<listing>` and `<plaintext>` all
+ * arrive decoded from linkedom; only `<textarea>` and `<xmp>` do not.)
+ *
+ * This belongs in {@linkcode "./_dom.ts".parseDocument}, so that every consumer sees one
+ * consistent tree — the markdown renderer has the same hole. Should it move there, empty
+ * this set in the same commit: decoding twice turns `&amp;amp;` into `&`, and
+ * {@linkcode "./_dom.ts".serialize} would then have to escape `<textarea>` again instead
+ * of treating it as raw.
  */
 const UNDECODED_TEXT_TAGS: ReadonlySet<string> = new Set(["textarea"]);
 
