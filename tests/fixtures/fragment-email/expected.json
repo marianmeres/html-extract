@@ -1,0 +1,16 @@
+{
+	"metadata": {
+		"favicon": "https://mail.example/favicon.ico",
+		"openGraph": {},
+		"twitter": {},
+		"meta": {}
+	},
+	"jsonLd": [],
+	"embeddedJsonKeys": [],
+	"microdata": [],
+	"content": {
+		"via": "scored",
+		"textLength": 243,
+		"linkDensity": 0.16
+	}
+}

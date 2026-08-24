@@ -1,0 +1,20 @@
+{
+	"title": "Benchmarks and snippets",
+	"lang": "en",
+	"metadata": {
+		"title": "Benchmarks and snippets",
+		"lang": "en",
+		"favicon": "https://bench.example/favicon.ico",
+		"openGraph": {},
+		"twitter": {},
+		"meta": {}
+	},
+	"jsonLd": [],
+	"embeddedJsonKeys": [],
+	"microdata": [],
+	"content": {
+		"via": "semantic",
+		"textLength": 859,
+		"linkDensity": 0
+	}
+}

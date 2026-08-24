@@ -1,0 +1,21 @@
+{
+	"title": "Compte rendu de la séance du 4 avril",
+	"lang": "fr",
+	"metadata": {
+		"title": "Compte rendu de la séance du 4 avril",
+		"description": "Séance ordinaire du conseil municipal, salle des fêtes, 20h00.",
+		"lang": "fr",
+		"favicon": "https://mairie.example/favicon.ico",
+		"openGraph": {
+			"title": "Compte rendu de la séance du 4 avril"
+		},
+		"twitter": {},
+		"meta": {
+			"description": "Séance ordinaire du conseil municipal, salle des fêtes, 20h00."
+		}
+	},
+	"jsonLd": [],
+	"embeddedJsonKeys": [],
+	"microdata": [],
+	"content": null
+}

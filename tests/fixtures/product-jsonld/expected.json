@@ -1,0 +1,118 @@
+{
+	"title": "Klettersteigset Vertigo 2",
+	"lang": "de-AT",
+	"metadata": {
+		"title": "Klettersteigset Vertigo 2",
+		"description": "Klettersteigset mit Bandfalldämpfer, geprüft nach EN 958:2017.",
+		"canonical": "https://shop.bergwerk.at/p/vertigo-2",
+		"lang": "de-AT",
+		"image": "https://cdn.bergwerk.at/p/vertigo-2/hero@2x.jpg",
+		"favicon": "https://shop.bergwerk.at/favicon.ico",
+		"openGraph": {
+			"image": "https://cdn.bergwerk.at/p/vertigo-2/hero@2x.jpg",
+			"image:width": "1600"
+		},
+		"twitter": {
+			"image:src": "https://cdn.bergwerk.at/p/vertigo-2/hero.jpg"
+		},
+		"meta": {
+			"description": "Klettersteigset mit Bandfalldämpfer, geprüft nach EN 958:2017.",
+			"sku": "BW-4471",
+			"pricecurrency": "EUR"
+		}
+	},
+	"jsonLd": [
+		{
+			"@context": "https://schema.org",
+			"@graph": [
+				{
+					"@type": "BreadcrumbList",
+					"itemListElement": [
+						{
+							"@type": "ListItem",
+							"position": 1,
+							"name": "Klettern"
+						},
+						{
+							"@type": "ListItem",
+							"position": 2,
+							"name": "Klettersteig"
+						}
+					]
+				},
+				{
+					"@type": "Product",
+					"name": "Klettersteigset Vertigo 2",
+					"sku": "BW-4471",
+					"description": "Klettersteigset mit Bandfalldämpfer, geprüft nach EN 958:2017.",
+					"brand": {
+						"@type": "Brand",
+						"name": "Vertigo"
+					},
+					"offers": {
+						"@type": "Offer",
+						"price": "89.90",
+						"priceCurrency": "EUR",
+						"availability": "https://schema.org/InStock"
+					},
+					"aggregateRating": {
+						"@type": "AggregateRating",
+						"ratingValue": "4.6",
+						"reviewCount": 213
+					}
+				}
+			]
+		},
+		{
+			"@context": "https://schema.org",
+			"@type": "Organization",
+			"name": "Bergwerk GmbH"
+		}
+	],
+	"embeddedJsonKeys": [],
+	"microdata": [
+		{
+			"type": [
+				"https://schema.org/Product"
+			],
+			"properties": {
+				"name": [
+					"Klettersteigset Vertigo 2"
+				],
+				"sku": [
+					"BW-4471"
+				],
+				"image": [
+					"https://shop.bergwerk.at/p/vertigo-2/hero@2x.jpg"
+				],
+				"offers": [
+					{
+						"type": [
+							"https://schema.org/Offer"
+						],
+						"properties": {
+							"price": [
+								"89,90 €"
+							],
+							"priceCurrency": [
+								"EUR"
+							],
+							"availability": [
+								"https://schema.org/InStock"
+							]
+						}
+					}
+				],
+				"category": [
+					"Klettersteig",
+					"Sicherung"
+				]
+			}
+		}
+	],
+	"content": {
+		"via": "scored",
+		"textLength": 429,
+		"linkDensity": 0
+	}
+}

@@ -1,0 +1,15 @@
+# Harbour crane collapses at north quay
+
+By [Ruth Ellinger](https://sentinel.example/staff/ruth-ellinger), 12 March 2024
+
+![The collapsed gantry crane seen from the pier](https://sentinel.example/img/crane-wide.jpg)
+
+The gantry gave way at 6.04am. Photograph: Ines Farr
+
+A gantry crane at the north quay collapsed shortly after six o'clock on Tuesday morning, bringing down a section of overhead rail with it. The port authority said no one was working beneath the structure at the time, and no injuries have been reported.
+
+Operations at berths four through nine are suspended until at least Thursday while engineers assess the remaining cranes, a spokesperson confirmed. Two container vessels have been diverted to the southern terminal.
+
+> We are treating this as a structural failure rather than an operational one, said the harbourmaster, Piet Voss.
+
+The crane, in service since 1998, had passed an inspection in November. The authority has commissioned an independent review, which is expected to report within six weeks. Freight handling for the region is expected to be reduced by roughly a fifth for the remainder of the month.

@@ -1,0 +1,27 @@
+{
+	"title": "Rate limiting · Widgetworks API reference",
+	"lang": "en",
+	"metadata": {
+		"title": "Rate limiting · Widgetworks API reference",
+		"description": "How the Widgetworks API applies rate limits, which headers it returns, and how to back off correctly.",
+		"canonical": "https://docs.widgetworks.dev/api/rate-limiting",
+		"lang": "en",
+		"siteName": "Widgetworks Docs",
+		"favicon": "https://docs.widgetworks.dev/favicon.ico",
+		"openGraph": {
+			"site_name": "Widgetworks Docs"
+		},
+		"twitter": {},
+		"meta": {
+			"description": "How the Widgetworks API applies rate limits, which headers it returns, and how to back off correctly."
+		}
+	},
+	"jsonLd": [],
+	"embeddedJsonKeys": [],
+	"microdata": [],
+	"content": {
+		"via": "semantic",
+		"textLength": 1128,
+		"linkDensity": 0.03
+	}
+}

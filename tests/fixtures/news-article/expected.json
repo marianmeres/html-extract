@@ -1,0 +1,57 @@
+{
+	"title": "Harbour crane collapses at north quay",
+	"lang": "en-GB",
+	"metadata": {
+		"title": "Harbour crane collapses at north quay",
+		"description": "A gantry crane at the north quay gave way shortly after 6am. Port operations are suspended until Thursday.",
+		"canonical": "https://sentinel.example/news/2024/harbour-crane-collapse",
+		"lang": "en-GB",
+		"siteName": "The Daily Sentinel",
+		"author": "Ruth Ellinger",
+		"publishedAt": "2024-03-12T06:41:00.000Z",
+		"modifiedAt": "2024-03-12T11:02:00.000Z",
+		"image": "https://sentinel.example/news/img/crane-wide.jpg",
+		"favicon": "https://sentinel.example/static/favicon-32.png",
+		"type": "article",
+		"openGraph": {
+			"title": "Harbour crane collapses at north quay",
+			"description": "No injuries, but port operations are suspended until Thursday.",
+			"image": "../img/crane-wide.jpg",
+			"type": "article",
+			"site_name": "The Daily Sentinel"
+		},
+		"twitter": {
+			"card": "summary_large_image",
+			"site": "@dailysentinel"
+		},
+		"meta": {
+			"description": "A gantry crane at the north quay gave way shortly after 6am. Port operations are suspended until Thursday.",
+			"author": "Ruth Ellinger",
+			"article:published_time": "2024-03-12T06:41:00+00:00",
+			"article:modified_time": "2024-03-12T11:02:00+00:00"
+		}
+	},
+	"jsonLd": [
+		{
+			"@context": "https://schema.org",
+			"@type": "NewsArticle",
+			"headline": "Harbour crane collapses at north quay",
+			"datePublished": "2024-03-12T06:41:00+00:00",
+			"author": {
+				"@type": "Person",
+				"name": "Ruth Ellinger"
+			},
+			"publisher": {
+				"@type": "Organization",
+				"name": "The Daily Sentinel"
+			}
+		}
+	],
+	"embeddedJsonKeys": [],
+	"microdata": [],
+	"content": {
+		"via": "semantic",
+		"textLength": 983,
+		"linkDensity": 0.01
+	}
+}

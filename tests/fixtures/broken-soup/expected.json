@@ -1,0 +1,21 @@
+{
+	"title": "Untitled Document",
+	"metadata": {
+		"title": "Untitled Document",
+		"description": "a second, later description that must not win",
+		"favicon": "https://geocities.example/favicon.ico",
+		"openGraph": {},
+		"twitter": {},
+		"meta": {
+			"description": "a second, later description that must not win"
+		}
+	},
+	"jsonLd": [],
+	"embeddedJsonKeys": [],
+	"microdata": [],
+	"content": {
+		"via": "scored",
+		"textLength": 247,
+		"linkDensity": 0.03
+	}
+}

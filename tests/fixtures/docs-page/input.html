@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rate limiting · Widgetworks API reference</title>
+<base href="https://docs.widgetworks.dev/api/">
+<meta name="description" content="How the Widgetworks API applies rate limits, which headers it returns, and how to back off correctly.">
+<link rel="canonical" href="rate-limiting">
+<link rel="shortcut icon" href="/favicon.ico">
+<meta property="og:site_name" content="Widgetworks Docs">
+</head>
+<body>
+<div id="app">
+<nav class="sidebar" aria-label="Documentation">
+	<ul>
+		<li><a href="authentication">Authentication</a></li>
+		<li><a href="pagination">Pagination</a></li>
+		<li><a href="rate-limiting" aria-current="page">Rate limiting</a></li>
+		<li><a href="webhooks">Webhooks</a></li>
+		<li><a href="errors">Errors</a></li>
+		<li><a href="changelog">Changelog</a></li>
+		<li><a href="sdks/javascript">JavaScript SDK</a></li>
+		<li><a href="sdks/python">Python SDK</a></li>
+		<li><a href="sdks/go">Go SDK</a></li>
+	</ul>
+</nav>
+<main class="content">
+	<h1>Rate limiting</h1>
+	<p>Every token is limited by a rolling window. When you exceed the window the API
+		answers <code>429 Too Many Requests</code> and sets <code>Retry-After</code>. Clients
+		are expected to honour that header rather than retrying immediately.</p>
+	<h2>Limits by plan</h2>
+	<table>
+		<thead>
+			<tr><th>Plan</th><th>Requests / minute</th><th>Burst</th></tr>
+		</thead>
+		<tbody>
+			<tr><td>Free</td><td>60</td><td>10</td></tr>
+			<tr><td>Team</td><td>600</td><td>120</td></tr>
+			<tr><td>Enterprise</td><td>6000</td><td>1200</td></tr>
+		</tbody>
+	</table>
+	<h2>Response headers</h2>
+	<ul>
+		<li><code>X-RateLimit-Limit</code> — the ceiling for the current window</li>
+		<li><code>X-RateLimit-Remaining</code> — calls left in the window
+			<ul>
+				<li>never negative</li>
+				<li>reset at the boundary, not gradually</li>
+			</ul>
+		</li>
+		<li><code>Retry-After</code> — seconds to wait, only present on a 429</li>
+	</ul>
+	<h2>Backing off</h2>
+	<p>The reference implementation below applies full jitter. Do not retry more than five
+		times, and do not retry a <code>4xx</code> other than <code>429</code>.</p>
+	<pre class="highlight"><code class="language-ts">async function call(url: string, attempt = 0): Promise&lt;Response&gt; {
+	const res = await fetch(url);
+	if (res.status !== 429 || attempt >= 5) return res;
+
+	const after = Number(res.headers.get("retry-after") ?? 1);
+	const wait = Math.random() * after * 1000;
+	await new Promise((r) =&gt; setTimeout(r, wait));
+	return call(url, attempt + 1);
+}</code></pre>
+	<ol start="2">
+		<li>Read <code>Retry-After</code>.</li>
+		<li>Sleep for a jittered fraction of it.</li>
+		<li>Retry at most five times.</li>
+	</ol>
+	<p>See also <a href="errors#429">error reference</a> and
+		<a href="https://status.widgetworks.dev">the status page</a>.</p>
+</main>
+<aside class="toc"><h3>On this page</h3><ul><li><a href="#limits">Limits</a></li><li><a href="#headers">Headers</a></li></ul></aside>
+</div>
+<footer><p>Widgetworks Inc. · <a href="/legal">Legal</a></p></footer>
+<script src="/assets/docs.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head><title>Benchmarks and snippets</title></head>
+<body>
+<main>
+	<h1>Benchmarks and snippets</h1>
+
+	<h2>Rectangular table (must become GFM)</h2>
+	<table>
+		<tr><th>Parser</th><th>Docs/s</th><th>Peak RSS</th></tr>
+		<tr><td>linkedom</td><td>1240</td><td>210 MB</td></tr>
+		<tr><td>parse5</td><td>980</td><td>260 MB</td></tr>
+		<tr><td>jsdom</td><td>110</td><td>1.4 GB</td></tr>
+	</table>
+
+	<h2>Table with colspan (must degrade to HTML)</h2>
+	<table>
+		<thead><tr><th colspan="2">Throughput</th><th>Notes</th></tr></thead>
+		<tbody>
+			<tr><td>cold</td><td>410</td><td>first run</td></tr>
+			<tr><td>warm</td><td>1240</td><td>steady state</td></tr>
+		</tbody>
+	</table>
+
+	<h2>Ragged table (must degrade to HTML)</h2>
+	<table>
+		<tr><td>a</td><td>b</td><td>c</td></tr>
+		<tr><td>d</td></tr>
+	</table>
+
+	<h2>Code</h2>
+	<p>Indentation and blank lines inside <code>&lt;pre&gt;</code> must survive exactly:</p>
+	<pre><code class="language-python">def parse(src):
+    depth = 0
+
+    for ch in src:
+        if ch == "{":
+            depth += 1   # two spaces before this comment
+
+    return depth
+</code></pre>
+	<p>A fence-widening case, because the snippet itself contains a fence:</p>
+	<pre><code>Write it like this:
+
+```
+literal fence inside the block
+```
+</code></pre>
+	<p>Inline code with a backtick: <code>a ` b</code>, and one with markdown in it:
+		<code>*not emphasis*</code>.</p>
+
+	<h2>Escaping corners</h2>
+	<p>A paragraph with *asterisks*, _underscores_, [brackets] and a stray backslash \ in it.</p>
+	<p># Not a heading, and 1. not a list either.</p>
+	<p>A line<br>broken by a br, then a rule:</p>
+	<hr>
+	<blockquote><p>Quoted.</p><blockquote><p>Nested quote.</p></blockquote></blockquote>
+</main>
+</body>
+</html>

@@ -1,0 +1,7 @@
+Das Vertigo 2 ist ein kompaktes Klettersteigset für Einsteiger und ambitionierte Begeher. Der Bandfalldämpfer arbeitet mit einem doppelt vernähten Reißband und bleibt auch nach einem Sturz eindeutig prüfbar.
+
+Die Karabiner öffnen mit einer Hand, verriegeln selbsttätig und sind für Nutzer zwischen 40 und 120 Kilogramm freigegeben. Das Set wiegt 480 Gramm und wird mit einem Prüfprotokoll ausgeliefert.
+
+- EN 958:2017
+- 480 g
+- 40–120 kg
