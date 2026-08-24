@@ -137,7 +137,14 @@ export interface MicrodataItem {
 	type?: string[];
 	/** `itemid`, verbatim. */
 	id?: string;
-	/** `itemprop` name → values: strings, or nested items. */
+	/**
+	 * `itemprop` name → values: strings, or nested items.
+	 *
+	 * A **null-prototype** object, so that an `itemprop` legitimately named `toString`
+	 * or `constructor` is a property like any other. Read it as a dictionary
+	 * (`props.name`, `Object.entries`, `JSON.stringify` all behave normally); just do
+	 * not call `props.hasOwnProperty(…)` on it — use `Object.hasOwn(props, …)`.
+	 */
 	properties: Record<string, (string | MicrodataItem)[]>;
 }
 
@@ -241,9 +248,14 @@ export interface CleanOptions extends BaseOptions {
 	keepComments?: boolean;
 
 	/**
-	 * Drop elements that end up with no text, no media and no attributes of value
-	 * ("empty wrappers"). Default: `true`. Void/media elements (`img`, `br`, `hr`,
-	 * `input`, `iframe`, …) are never considered empty.
+	 * Drop elements that end up with no text, no media and no `id`/`name` to be linked
+	 * to ("empty wrappers"). Default: `true`.
+	 *
+	 * Void/media elements (`img`, `br`, `hr`, `input`, `iframe`, …) are never considered
+	 * empty, nor is anything inside an `<svg>`/`<math>` subtree. An empty
+	 * `<a id="sec-3">` survives because in-document links point at it; a `class` or a
+	 * `data-*` attribute is *not* substance, since every empty `<div>` on a real page
+	 * carries one and honouring those would make this option a no-op.
 	 */
 	dropEmpty?: boolean;
 
@@ -432,7 +444,15 @@ export type MainContentVia = "selector" | "semantic" | "scored";
  * markdown conversion of a 2 MB document.
  */
 export interface MainContent {
-	/** The extracted subtree, serialized. Cleaned, but still HTML. */
+	/**
+	 * The extracted subtree, serialized. Structurally cleaned (see
+	 * {@linkcode "./clean.ts".clean} — **not** sanitized), but still HTML.
+	 *
+	 * It **includes the winning element's own tag**, with its `class`/`id`/`style`
+	 * intact — do not wrap it yourself or you get a doubled container. The one exception
+	 * is a winner that is the document body, which has no tag worth emitting and yields
+	 * its children directly.
+	 */
 	html: string;
 	/** The content as markdown. Lazy + memoized. */
 	markdown(): string;

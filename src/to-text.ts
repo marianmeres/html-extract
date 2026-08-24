@@ -29,6 +29,7 @@
 
 import {
 	childNodes,
+	decodeReferences,
 	type DomNode,
 	isElement,
 	isText,
@@ -36,6 +37,7 @@ import {
 	parseDocument,
 	tag,
 	text,
+	UNDECODED_TEXT_TAGS,
 } from "./_dom.ts";
 import { assertHtmlString, BLOCK_TAGS, NON_CONTENT_TAGS } from "./_util.ts";
 import type { TextOptions } from "./types.ts";
@@ -103,81 +105,6 @@ function separatorFor(name: string): number {
 // ---------------------------------------------------------------------------------
 // character references
 // ---------------------------------------------------------------------------------
-
-/**
- * Tags whose text the parser hands over with its character references **unresolved**.
- *
- * Everything else in this file may assume decoded text, because that is what the parser
- * normally gives — `<div>Tom &amp; Jerry</div>` arrives as `Tom & Jerry`. `<textarea>`
- * is the exception: linkedom tokenizes it as raw text, so its `textContent` is the
- * literal source, and the eight characters `Tom &amp;` would otherwise reach the
- * extracted plain text of every page with a pre-filled comment box, indistinguishable
- * from content that really did contain an ampersand.
- *
- * HTML5 calls `<textarea>` an *RCDATA* element, and RCDATA does resolve references — so
- * decoding here restores what the parser owed us rather than inventing a rule.
- * `<xmp>`, `<iframe>`, `<noembed>` and `<noframes>` are *RAWTEXT*, where `&amp;` really
- * is five literal characters in every browser, and are deliberately **not** listed:
- * decoding them would corrupt what the page displays. (Measured, not assumed —
- * `<title>`, `<iframe>`, `<noembed>`, `<noframes>`, `<listing>` and `<plaintext>` all
- * arrive decoded from linkedom; only `<textarea>` and `<xmp>` do not.)
- *
- * This belongs in {@linkcode "./_dom.ts".parseDocument}, so that every consumer sees one
- * consistent tree — the markdown renderer has the same hole. Should it move there, empty
- * this set in the same commit: decoding twice turns `&amp;amp;` into `&`, and
- * {@linkcode "./_dom.ts".serialize} would then have to escape `<textarea>` again instead
- * of treating it as raw.
- */
-const UNDECODED_TEXT_TAGS: ReadonlySet<string> = new Set(["textarea"]);
-
-/** The named references an HTML serializer emits. See {@linkcode decodeReferences}. */
-const NAMED_REFERENCES: Readonly<Record<string, string>> = {
-	amp: "&",
-	apos: "'",
-	gt: ">",
-	lt: "<",
-	nbsp: "\u00a0",
-	quot: '"',
-};
-
-/**
- * Resolves the character references in {@linkcode UNDECODED_TEXT_TAGS} text.
- *
- * Deliberately *not* a full HTML5 named-entity table: that table has 2231 entries, it
- * belongs to the parser, and a second copy of it in a renderer is a copy that drifts.
- * What is covered is what an encoder actually produces — the five XML names plus
- * `&nbsp;` — together with every numeric reference, which is the whole long tail
- * (`&#169;` and `&#xa9;` both come out as `©`). An unrecognized name is left exactly as
- * it stands: `&copy` without a semicolon is ordinary text far more often than it is a
- * broken entity.
- *
- * Out-of-range and surrogate code points become U+FFFD rather than reaching
- * `String.fromCodePoint`, which throws a `RangeError` for them — and a throw from here
- * would break the never-throws contract for a document that only had a typo in it. The
- * quantifiers in the pattern are bounded for the same class of reason: an unbounded
- * `\d+` before a literal `;` backtracks over every digit of a run that never ends in
- * one, and this text comes off the open web.
- */
-function decodeReferences(value: string): string {
-	if (!value.includes("&")) return value;
-	return value.replace(
-		/&(?:#(\d{1,10})|#[xX]([\da-fA-F]{1,8})|([a-zA-Z]{2,8}));/g,
-		(match, dec: string | undefined, hex: string | undefined, name: string) => {
-			if (dec === undefined && hex === undefined) {
-				return NAMED_REFERENCES[name] ?? match;
-			}
-			const code = dec !== undefined
-				? Number.parseInt(dec, 10)
-				: Number.parseInt(hex!, 16);
-			// U+FFFD for U+0000, the surrogate block and anything past the top of
-			// Unicode — what a real parser does, and what keeps `fromCodePoint`
-			// (which throws a `RangeError` on exactly those) inside the contract
-			const bad = code === 0 || code > 0x10ffff ||
-				(code >= 0xd800 && code <= 0xdfff);
-			return bad ? "\ufffd" : String.fromCodePoint(code);
-		},
-	);
-}
 
 // ---------------------------------------------------------------------------------
 // <pre>

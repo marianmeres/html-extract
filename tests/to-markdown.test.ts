@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { parseDocument } from "../src/_dom.ts";
 import { markdownFromDocument, renderMarkdown, toMarkdown } from "../src/to-markdown.ts";
 
@@ -41,6 +41,30 @@ Deno.test("pre fence widens past the longest backtick run in the content", () =>
 
 Deno.test("empty pre emits nothing", () => {
 	assertEquals(toMarkdown("<pre></pre><p>x</p>"), "x");
+});
+
+Deno.test("pre keeps the line breaks a highlighter expresses structurally", () => {
+	// a <div> (or a <br>) per line with no newline of its own — textContent welded
+	// every one of these onto a single line while toText() got it right
+	assertEquals(
+		toMarkdown(
+			'<pre class="highlight"><div class="line">const a = 1;</div>' +
+				'<div class="line">const b = 2;</div></pre>',
+		),
+		"```\nconst a = 1;\nconst b = 2;\n```",
+	);
+	assertEquals(toMarkdown("<pre>line1<br>line2</pre>"), "```\nline1\nline2\n```");
+});
+
+Deno.test("a pre holding a long newline run renders in linear time", () => {
+	// /(?:\r?\n)+[ \t]*$/ re-matched the whole run from every offset inside it: 80 000
+	// newlines took ~22 s, and a truncated crawl dumps exactly this into a <pre>
+	const t0 = performance.now();
+	const md = toMarkdown("<pre>" + "\n".repeat(80_000) + "x</pre>");
+	const elapsed = performance.now() - t0;
+	// the newline right after <pre> is formatting; the other 79 999 are content
+	assertEquals(md, "```\n" + "\n".repeat(79_999) + "x\n```");
+	assert(elapsed < 3_000, `took ${Math.round(elapsed)} ms`);
 });
 
 Deno.test("inline code widens and pads its delimiters", () => {
@@ -151,6 +175,44 @@ Deno.test("options.bullet picks the unordered marker", () => {
 	assertEquals(toMarkdown("<ul><li>a</li></ul>", { bullet: "+" }), "+ a");
 });
 
+Deno.test("a list nested directly in a list is kept, not dropped", () => {
+	// invalid markup that editors and Word exports emit and browsers draw as a nested
+	// list; filtering for <li> made the whole subtree vanish from the markdown
+	assertEquals(
+		toMarkdown(
+			"<ul><li>Top level</li><ul><li>Sub A</li><li>Sub B</li></ul><li>Second</li></ul>",
+		),
+		"- Top level\n  - Sub A\n  - Sub B\n- Second",
+	);
+	assertEquals(toMarkdown("<ol><li>a</li><ul><li>b</li></ul></ol>"), "1. a\n   - b");
+	assertEquals(
+		toMarkdown("<ol><li>a</li><ol><li>b</li></ol><li>c</li></ol>"),
+		"1. a\n   1. b\n2. c",
+	);
+});
+
+Deno.test("content between list items reaches the output", () => {
+	// the counter keeps running across the split, and every marker is explicit
+	assertEquals(toMarkdown("<ol>stray<li>a</li></ol>"), "stray\n\n1. a");
+	assertEquals(toMarkdown("<ol><li>a</li>mid<li>b</li></ol>"), "1. a\n\nmid\n\n2. b");
+	assertEquals(
+		toMarkdown("<ul><li>a</li><div>block</div><li>b</li></ul>"),
+		"- a\n\nblock\n\n- b",
+	);
+});
+
+Deno.test("whitespace between items never splits a list", () => {
+	assertEquals(toMarkdown("<ul>\n\t<li>a</li>\n\t<li>b</li>\n</ul>"), "- a\n- b");
+	assertEquals(toMarkdown("<ul><li>a</li><!-- c --><li>b</li></ul>"), "- a\n- b");
+});
+
+Deno.test("a list whose only child is a list, and a stray li", () => {
+	assertEquals(toMarkdown("<ul><ul><li>a</li></ul></ul>"), "- a");
+	assertEquals(toMarkdown("<ul><ul><li>b</li></ul><li>a</li></ul>"), "- b\n\n- a");
+	// an <li> outside any list is still a container: its text must survive
+	assertEquals(toMarkdown("<li>x</li>"), "x");
+});
+
 Deno.test("a code block inside a list item stays inside it, verbatim", () => {
 	assertEquals(
 		toMarkdown("<ul><li><p>step</p><pre>a  \nb</pre></li></ul>"),
@@ -211,6 +273,50 @@ Deno.test("a nested table degrades to passthrough HTML", () => {
 	assertEquals(toMarkdown(html), html);
 });
 
+Deno.test("passthrough HTML drops script, style and comments like everything else", () => {
+	// serialize() writes raw-text elements unescaped, so an unfiltered passthrough
+	// carried live script out of a crawled page into output documented as script-free
+	assertEquals(
+		toMarkdown(
+			'<table><tr><td colspan="2">a</td></tr>' +
+				"<tr><td>b<script>alert(1)</script></td><td>c<!--secret--></td></tr></table>",
+		),
+		'<table><tr><td colspan="2">a</td></tr><tr><td>b</td><td>c</td></tr></table>',
+	);
+});
+
+Deno.test("passthrough HTML carries no blank line", () => {
+	// one blank line ends a CommonMark HTML block: the rest of the table would render
+	// as escaped literal source
+	const md = toMarkdown(
+		'<table>\n\t<tr>\n\t\t<td>a</td>\n\n\t\t<td colspan="2">b</td>\n\t</tr>\n</table>',
+	);
+	assertEquals(
+		md,
+		'<table>\n\t<tr>\n\t\t<td>a</td>\n\t\t<td colspan="2">b</td>\n\t</tr>\n</table>',
+	);
+	assert(!/\n[ \t]*\n/.test(md), "a blank line survived the passthrough");
+
+	// including the blank lines of a <pre> inside such a table — losing those is the
+	// deliberate trade-off against losing the table
+	const withPre = toMarkdown(
+		'<table><tr><th colspan="2">E</th></tr>' +
+			"<tr><td>js</td><td><pre>const a = 1;\n\nconst b = 2;</pre></td></tr></table>",
+	);
+	assertStringIncludes(withPre, "const a = 1;\nconst b = 2;");
+	assert(!/\n[ \t]*\n/.test(withPre), "a blank line survived the passthrough");
+});
+
+Deno.test("passthrough HTML leaves the shared document untouched", () => {
+	// the filtering runs on a clone — extract() hands the same tree to every extractor
+	const doc = parseDocument(
+		'<table><tr><td colspan="2">a<script>x</script></td></tr>' +
+			"<tr><td>b</td><td>c</td></tr></table>",
+	)!;
+	markdownFromDocument(doc);
+	assertEquals(doc.body.querySelectorAll("script").length, 1);
+});
+
 Deno.test("table degradation is logged at debug", () => {
 	const messages: string[] = [];
 	const logger = {
@@ -250,6 +356,26 @@ Deno.test("every line-start marker is escaped", () => {
 	);
 });
 
+Deno.test("tildes are escaped everywhere, not just at a line start", () => {
+	// `~~~` opens a CommonMark code fence and swallows the rest of the document;
+	// `~~x~~` (and `~x~` in cmark-gfm) is GFM strikethrough
+	assertEquals(
+		toMarkdown("<p>~~~</p><p>The rest of the document.</p>"),
+		"\\~\\~\\~\n\nThe rest of the document.",
+	);
+	assertEquals(toMarkdown("<p>a ~~strike~~ b</p>"), "a \\~\\~strike\\~\\~ b");
+	assertEquals(toMarkdown("<p>see ~/.bashrc</p>"), "see \\~/.bashrc");
+	// ours are still ours
+	assertEquals(toMarkdown("<p><del>x</del></p>"), "~~x~~");
+	assertEquals(toMarkdown("<p><code>~/.bashrc</code></p>"), "`~/.bashrc`");
+});
+
+Deno.test("a text < is escaped before a comment or an instruction too", () => {
+	// an unescaped one renders as a real HTML comment, i.e. as nothing at all
+	assertEquals(toMarkdown("<p>&lt;!-- note --&gt;</p>"), "\\<!-- note -->");
+	assertEquals(toMarkdown("<p>a &lt;? b</p>"), "a \\<? b");
+});
+
 Deno.test("escape:false leaves text alone", () => {
 	assertEquals(toMarkdown("<p>a * b _ c [d]</p>", { escape: false }), "a * b _ c [d]");
 });
@@ -264,6 +390,24 @@ Deno.test("br is a backslash hard break, hr is its own block", () => {
 
 Deno.test("a trailing br does not leave a dangling backslash", () => {
 	assertEquals(toMarkdown("<p>a<br><br></p>"), "a");
+	assertEquals(toMarkdown("<p>a<br> \t <br>  </p>"), "a");
+	// only the *trailing* run goes
+	assertEquals(toMarkdown("<p>a<br>b<br></p>"), "a\\\nb");
+});
+
+Deno.test("a paragraph of br renders in linear time", () => {
+	// /(?:\s*\\\n)+\s*$/ backtracked over the whole run from every start position:
+	// 40 000 <br> (157 KB) took ~15 s, and <br>-per-line is ordinary email markup
+	const t0 = performance.now();
+	assertEquals(
+		toMarkdown("<p>" + "<br>".repeat(40_000) + "x</p>"),
+		"\\\n".repeat(40_000) + "x",
+	);
+	// any long run of characters that survives the markdown whitespace collapse but is
+	// still `\s` triggered it as well - U+00A0 is the everyday one
+	assertEquals(toMarkdown("<p>word" + "\u00a0".repeat(80_000) + "</p>"), "word");
+	const elapsed = performance.now() - t0;
+	assert(elapsed < 3_000, `took ${Math.round(elapsed)} ms`);
 });
 
 Deno.test("headings are ATX and an empty one emits nothing", () => {
@@ -276,8 +420,28 @@ Deno.test("headings are ATX and an empty one emits nothing", () => {
 Deno.test("emphasis hoists outer whitespace out of the delimiters", () => {
 	assertEquals(
 		toMarkdown("<p><strong> b </strong>and<em>c</em><del>d</del><s>e</s></p>"),
-		"**b** and*c*~~d~~~~e~~",
+		"**b** and*c*~~d~~<!-- -->~~e~~",
 	);
+});
+
+Deno.test("adjacent same-type emphasis does not merge into one run", () => {
+	// `*a**b*` re-parses as a single <em> holding two literal asterisks — the second
+	// element disappears. The empty comment renders to nothing and breaks the run.
+	assertEquals(toMarkdown("<p><em>a</em><em>b</em></p>"), "*a*<!-- -->*b*");
+	assertEquals(
+		toMarkdown("<p><strong>a</strong><strong>b</strong></p>"),
+		"**a**<!-- -->**b**",
+	);
+	assertEquals(toMarkdown("<p><del>a</del><s>b</s></p>"), "~~a~~<!-- -->~~b~~");
+	assertEquals(toMarkdown("<p><code>a</code><code>b</code></p>"), "`a`<!-- -->`b`");
+});
+
+Deno.test("only an abutting delimiter gets a separator", () => {
+	// a different delimiter character, whitespace between, and an escaped literal are
+	// all incapable of merging, so none of them pays for one
+	assertEquals(toMarkdown("<p><strong>a</strong><del>b</del></p>"), "**a**~~b~~");
+	assertEquals(toMarkdown("<p><em>a</em> <em>b</em></p>"), "*a* *b*");
+	assertEquals(toMarkdown("<p>a*<em>b</em></p>"), "a\\**b*");
 });
 
 Deno.test("mark and unknown inline elements are transparent", () => {
@@ -294,11 +458,35 @@ Deno.test("blockquotes nest their prefix", () => {
 	);
 });
 
-Deno.test("dl puts dt on its own line and indents dd by two", () => {
+Deno.test("dl renders as a bold term with its definitions as a list", () => {
+	// two-space indentation is a lazy continuation line, not a construct: the old
+	// output collapsed into one run-on paragraph when rendered
 	assertEquals(
-		toMarkdown("<dl><dt>T</dt><dd>D1</dd><dd>D2</dd></dl>"),
-		"T\n  D1\n  D2",
+		toMarkdown("<dl><dt>T</dt><dd>D1</dd><dd>D2</dd><dt>U</dt><dd>E</dd></dl>"),
+		"**T**\n\n- D1\n- D2\n\n**U**\n\n- E",
 	);
+});
+
+Deno.test("dl reads through an html5 grouping div", () => {
+	assertEquals(
+		toMarkdown("<dl><div><dt>T</dt><dd>D</dd></div></dl>"),
+		"**T**\n\n- D",
+	);
+});
+
+Deno.test("dl keeps content that is neither dt nor dd", () => {
+	assertEquals(
+		toMarkdown("<dl><dt>T</dt><p>note</p><dd>D</dd></dl>"),
+		"**T**\n\nnote\n\n- D",
+	);
+});
+
+Deno.test("a definition holding blocks indents them under its marker", () => {
+	assertEquals(
+		toMarkdown("<dl><dt>T</dt><dd><p>a</p><p>b</p></dd></dl>"),
+		"**T**\n\n- a\n\n  b",
+	);
+	assertEquals(toMarkdown("<dl></dl><p>x</p>"), "x");
 });
 
 Deno.test("figure content comes first, then the caption", () => {
@@ -349,9 +537,11 @@ Deno.test("renderMarkdown uses options.url as the base verbatim", () => {
 	);
 });
 
-Deno.test("renderMarkdown on a pre keeps the fence", () => {
+Deno.test("renderMarkdown on a pre keeps the fence and the indent", () => {
+	// trailing whitespace on the last line goes with the `</pre>`, exactly as in
+	// toText(); interior lines keep theirs
 	const doc = parseDocument("<pre>  x  </pre>")!;
-	assertEquals(renderMarkdown(doc.body.querySelector("pre")!), "```\n  x  \n```");
+	assertEquals(renderMarkdown(doc.body.querySelector("pre")!), "```\n  x\n```");
 });
 
 Deno.test("markdownFromDocument renders the body", () => {
@@ -423,4 +613,22 @@ Deno.test("a wrong argument type is a programmer error and throws", () => {
 	assertThrows(() => bad(null), TypeError);
 	assertThrows(() => bad(undefined), TypeError);
 	assertThrows(() => bad(42), TypeError);
+});
+
+Deno.test("<textarea> is RCDATA and arrives decoded, <xmp> is RAWTEXT and does not", () => {
+	// linkedom hands both over as raw source; only textarea owes us a decode, and the
+	// plain-text renderer has to agree with this one or the same page reads differently
+	// depending on which output you asked for
+	assertEquals(
+		toMarkdown("<textarea>Tom &amp; Jerry &lt;3</textarea>"),
+		"Tom & Jerry <3",
+	);
+	assertEquals(toMarkdown("<xmp>a &amp; b</xmp>"), "a &amp; b");
+	assertEquals(toMarkdown("<textarea>&toString;</textarea>"), "&toString;");
+	// decoded content is still markdown-escaped, like any other text
+	assertEquals(toMarkdown("<textarea>a *b* c</textarea>"), "a \\*b\\* c");
+	assertEquals(
+		toMarkdown("<textarea>a *b* c</textarea>", { escape: false }),
+		"a *b* c",
+	);
 });

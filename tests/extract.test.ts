@@ -171,6 +171,67 @@ Deno.test("broken documents still yield what they carry", async () => {
 	assert(soupDoc.content === null || soupDoc.content.textLength >= 0);
 });
 
+Deno.test("pathological page: the corners an ordinary corpus never reaches", async () => {
+	const { html } = await loadFixture("pathological");
+	const doc = extract(html, { url: "https://notes.example/logs/tide-gauge" });
+
+	// `LANG=` and `ROLE=` in the source casing — the selector engine is case-sensitive on
+	// attribute names, so the semantic path has to read them through attr()
+	assertEquals(doc.lang, "en-AU");
+	assertEquals(doc.content?.via, "semantic");
+	// …and [role=main] sits four wrapper divs above its paragraphs
+	assertStringIncludes(doc.content!.text(), "float arm now fouls its guide");
+	assert(!doc.content!.text().includes("Coastal Watch Trust"), "footer leaked in");
+	assert(!doc.content!.text().includes("Index"), "nav leaked in");
+
+	// the page's only JSON-LD is site furniture; its `name`/`url` must not win
+	assertEquals(doc.metadata.title, "Field notes: the tide gauge & the gull");
+	assertEquals(doc.metadata.canonical, undefined);
+
+	// a date shape nobody can read stays raw; one with an explicit zone normalizes
+	assertEquals(doc.metadata.publishedAt, "March 2024");
+	assertEquals(doc.metadata.modifiedAt, "2024-03-12T06:41:00.000Z");
+
+	// the first <base> carries only `target`; the second is the one with the href
+	assertStringIncludes(
+		doc.content!.markdown(),
+		"https://notes.example/archive/2024/series?flag=corrected",
+	);
+
+	// an itemprop named after an Object.prototype member used to throw and cost the
+	// caller the entire page
+	assertEquals(Object.entries(doc.microdata[0].properties), [
+		["name", ["Tide gauge NP-1"]],
+		["toString", ["© 2026 Coastal Watch Trust"]],
+		["constructor", ["brass and stainless"]],
+	]);
+});
+
+Deno.test("rendering corners: markdown constructs that used to be lost or broken", async () => {
+	const { html } = await loadFixture("rendering-corners");
+	const md = extract(html, { url: "https://notes.example/logs/rig" }).content!
+		.markdown();
+
+	// a nested list that is a direct child of a list, not of an <li>
+	assertStringIncludes(md, "- Float arm, stainless, 300 mm\n  - guide bushing");
+	// <ol start> and <li value>
+	assertStringIncludes(md, "3. Lift the float arm clear.");
+	assertStringIncludes(md, "7. Replace the guide bushing.");
+	assertStringIncludes(md, "8. Re-level against the datum plate.");
+	// a definition list has to render as something, not as a run-on paragraph
+	assertStringIncludes(md, "**Datum**");
+	// a line of tildes must not open a code fence
+	assertStringIncludes(md, "\\~\\~\\~");
+	// adjacent same-delimiter emphasis runs must not fuse into literal asterisks
+	assertStringIncludes(md, "*a*<!-- -->*b*");
+	// the ragged/colspan table degrades to HTML, with its <script> stripped
+	assertStringIncludes(md, "<table>");
+	assert(!md.includes("ignored()"), "a script survived the table passthrough");
+	// RCDATA is decoded, RAWTEXT is not
+	assertStringIncludes(md, "Reads high & sticks");
+	assertStringIncludes(md, "raw &amp; literal");
+});
+
 Deno.test("extract: switches turn the parts off without changing the shape", async () => {
 	const { html } = await loadFixture("news-article");
 
@@ -198,6 +259,22 @@ Deno.test("extract: contentSelector overrides the heuristic", async () => {
 	const doc = extract(html, { contentSelector: "aside.related" });
 	assertEquals(doc.content?.via, "selector");
 	assertStringIncludes(doc.content!.text(), "Dockers vote to strike");
+});
+
+Deno.test("extract: one odd itemprop does not cost the whole page", () => {
+	// the properties map used to be a plain object, so an `itemprop` named after an
+	// Object.prototype member threw and the caller lost the entire result — metadata,
+	// json-ld and content included, not merely the microdata
+	const html = `<!doctype html><html><head><title>T</title></head><body><main>
+		<p>${"Body copy long enough to clear the content threshold. ".repeat(4)}</p>
+		<footer><span itemscope><span itemprop="toString">© 2026</span></span></footer>
+	</main></body></html>`;
+	const doc = extract(html);
+	assertEquals(doc.metadata.title, "T");
+	assert(doc.content, "content was lost");
+	// read as a dictionary: TypeScript resolves `.toString` on a Record to Object's
+	// method, which is exactly why the JSDoc points at Object.entries/Object.hasOwn
+	assertEquals(Object.entries(doc.microdata[0].properties), [["toString", ["© 2026"]]]);
 });
 
 Deno.test("extract: an empty document is a degraded result, not an error", () => {

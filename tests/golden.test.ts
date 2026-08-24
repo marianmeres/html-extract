@@ -17,6 +17,8 @@ const BASE_URL: Record<string, string> = {
 	"broken-truncated": "https://mairie.example/seances/4-avril",
 	"broken-soup": "https://geocities.example/~me/index.html",
 	"fragment-email": "https://mail.example/message/88213",
+	"pathological": "https://notes.example/logs/tide-gauge",
+	"rendering-corners": "https://notes.example/logs/rig",
 };
 
 for (const fixture of await loadFixtures()) {

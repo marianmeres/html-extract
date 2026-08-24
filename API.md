@@ -73,7 +73,7 @@ then document fallbacks:
 
 | Field         | Chain                                                                                                                                                                                                    |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`       | `meta[name=title]` → `og:title` → `twitter:title` → JSON-LD `headline`/`name` → `<title>` → first `<h1>`                                                                                                 |
+| `title`       | `meta[name=title]` → `og:title` → `twitter:title` → JSON-LD `headline` (any node) / `name` (content nodes only) → `<title>` → first `<h1>`                                                               |
 | `description` | `meta[name=description]` → `og:description` → `twitter:description` → JSON-LD `description`                                                                                                              |
 | `canonical`   | `link[rel=canonical]` → `og:url` → JSON-LD `url`                                                                                                                                                         |
 | `lang`        | `<html lang>` → `meta[http-equiv=content-language]` → `og:locale`                                                                                                                                        |
@@ -85,8 +85,20 @@ then document fallbacks:
 | `favicon`     | `link[rel~=icon]` — token-based, so `rel="shortcut icon"` matches here too and document order decides → `link[rel=apple-touch-icon]` → `link[rel=mask-icon]` → `/favicon.ico` (only when `url` is given) |
 | `type`        | `og:type`                                                                                                                                                                                                |
 
-Dates are normalized to ISO 8601 when parseable and **kept raw when not** — an
-unparseable date is still information.
+JSON-LD is only half-trusted. `headline`, `author`, `datePublished` and `dateModified`
+are read from any node; the generic keys `name`, `url`, `description` and `publisher`
+are read **only** from a node whose `@type` names page content (`Article` and friends,
+any `…Page`, `Product`, `Recipe`, `Event`). On a page whose only JSON-LD is an
+`Organization`, `WebSite` or `BreadcrumbList` — the CMS baseline on much of the web —
+those steps are skipped entirely, so the publisher's name never becomes the title and
+the site's homepage never becomes the canonical.
+
+Dates are normalized to ISO 8601 only when the value matches a **recognised shape** —
+ISO 8601, or an RFC 2822 / HTTP-date carrying an explicit zone — and are otherwise
+**kept raw**: an unparseable date is still information, and `03/05/2024` is a day the
+world disagrees about. A recognised value with a time but no zone is read as UTC. This
+is deliberately stricter than `Date.parse`, which resolves `"March 2024"` against the
+_host_ timezone and so gives the same document a different date on different machines.
 
 **Example:**
 
@@ -169,7 +181,10 @@ property rather than a wrong one.
 - `options.url` (`string`) — base for resolving URL-valued properties
 - `options.maxItems` (`number`) — cap on top-level items. Default: `1000`
 
-**Returns:** [`MicrodataItem[]`](#microdataitem)
+**Returns:** [`MicrodataItem[]`](#microdataitem) — each item's `properties` is a
+**null-prototype** object, so an `itemprop` named `toString` or `constructor` is an
+ordinary key. Read it as a dictionary; use `Object.hasOwn(props, k)` rather than
+`props.hasOwnProperty(k)`.
 
 **Example:**
 
@@ -240,9 +255,21 @@ HTML → GitHub-flavoured markdown, rendered from the parsed tree (no `turndown`
 - Tables become GFM **only when rectangular**; a table with `colspan`/`rowspan` or ragged
   rows degrades to passthrough HTML rather than emitting broken markdown.
 - Nested lists indent by the parent's marker width; `<ol start>` and `<li value>` are
-  honoured.
+  honoured. A nested `<ul>`/`<ol>` that sits directly inside a list rather than inside an
+  `<li>` — invalid markup a browser still renders — is attached to the previous item
+  rather than dropped.
+- `<dl>` becomes `**Term**` followed by its definitions as a list: markdown has no
+  definition list, and plain indented lines collapse into one run-on paragraph.
+- A non-rectangular table's HTML passthrough is structurally cleaned first (no
+  `<script>`/`<style>`/comments) and emitted without blank lines, because a blank line
+  ends a CommonMark HTML block and the rest of the table would render as literal source.
 - `<br>` becomes a backslash hard break (survives trailing-whitespace stripping),
   `<hr>` becomes `---`, and runs of blank lines collapse to one.
+- Escaping also covers a line-leading `~` (an unescaped run opens a code fence that
+  swallows the rest of the document), and two adjacent same-delimiter emphasis runs are
+  separated by an empty HTML comment so they do not fuse into literal asterisks.
+- `<textarea>` content is entity-decoded on read (HTML5 RCDATA); `<xmp>` is not (RAWTEXT
+  — `&amp;` really is five characters there).
 
 ---
 

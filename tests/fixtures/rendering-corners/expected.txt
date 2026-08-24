@@ -1,0 +1,47 @@
+Rig details
+
+Float arm, stainless, 300 mm
+
+guide bushing is the part that fouls
+replaced 2019
+
+Datum plate, brass
+
+Lift the float arm clear.
+Replace the guide bushing.
+Re-level against the datum plate.
+
+Datum
+Chart datum, not AHD
+Re-levelled in 2021
+Sampling
+Six minutes, instantaneous
+
+Three lines,
+one paragraph,
+separated by breaks.
+
+A row of tildes on its own line, which must not open a code fence:
+
+~~~
+
+ab and cd — adjacent runs.
+
+An identifier with under_scores and a 3 * 4 product.
+
+tide-tool read --pile north \
+  --window 6m
+
+Pile	Offset
+north	+11 cm
+
+Ragged and spanning
+a
+
+Idealised trace
+
+Notes to the operator, as the page left them in the box:
+
+Reads high & sticks <near the top> raw &amp; literal <b>markup</b>
+
+Trailing anchor target.

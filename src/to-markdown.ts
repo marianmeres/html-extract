@@ -28,6 +28,8 @@ import {
 	attr,
 	childNodes,
 	children,
+	cloneElement,
+	decodeReferences,
 	type DomElement,
 	type DomNode,
 	isComment,
@@ -37,9 +39,11 @@ import {
 	parseDocument,
 	query,
 	queryAll,
+	remove,
 	serialize,
 	tag,
 	text,
+	UNDECODED_TEXT_TAGS,
 } from "./_dom.ts";
 import {
 	assertHtmlString,
@@ -50,6 +54,7 @@ import {
 	NON_CONTENT_TAGS,
 	resolveUrl,
 } from "./_util.ts";
+import { preservedText } from "./to-text.ts";
 import type { Logger, MarkdownOptions } from "./types.ts";
 
 /**
@@ -120,16 +125,25 @@ interface Block {
  * because nothing downstream can tell an escape we added from one the author wrote. The
  * ruleset here is the smallest one that cannot change how the output parses:
  *
- * - everywhere: `\`, `` ` ``, `*`, `_`, `[`, `]`
- * - `<` only when a letter or `/` follows it, i.e. when it looks like a tag
+ * - everywhere: `\`, `` ` ``, `*`, `_`, `[`, `]`, `~`
+ * - `<` only when a letter, `/`, `!` or `?` follows it, i.e. when it looks like a tag,
+ *   a comment or a processing instruction
  * - `(` only directly after a `]`, i.e. where an inline link could form
  * - at the start of a line only: `#`, `>`, `-`, `+`, `=`, `|`, and a `1.`/`1)` ordered
  *   list marker
  *
  * The failure mode this defends against is a paragraph that silently becomes a heading,
  * a list item or a table row because it happened to start with the wrong character.
- * Everything else — `.`, `!`, `~`, a mid-sentence `#` — cannot start a construct and is
+ * Everything else — `.`, `!`, `:`, a mid-sentence `#` — cannot start a construct and is
  * left alone on purpose.
+ *
+ * `~` is in the unconditional list rather than the line-start one, and it earns its
+ * place there twice over: `~~~` opens a CommonMark **code fence**, so a paragraph that
+ * is an ASCII rule swallows the whole rest of the document, and `~~x~~` (`~x~` in
+ * cmark-gfm) is GFM strikethrough, so a pair of tildes anywhere in a paragraph strikes
+ * the text between them. Escaping only at the line start would fix the first and leave
+ * the second, and escaping only doubled tildes would leave the single-tilde form — this
+ * is the same reasoning that already puts `_` in the list despite `snake_case` prose.
  */
 function escapeInline(value: string, lineStart: boolean): string {
 	let out = "";
@@ -137,10 +151,10 @@ function escapeInline(value: string, lineStart: boolean): string {
 		const ch = value[i];
 		if (
 			ch === "\\" || ch === "`" || ch === "*" || ch === "_" || ch === "[" ||
-			ch === "]"
+			ch === "]" || ch === "~"
 		) {
 			out += "\\" + ch;
-		} else if (ch === "<" && /[a-zA-Z/]/.test(value[i + 1] ?? "")) {
+		} else if (ch === "<" && /[a-zA-Z/!?]/.test(value[i + 1] ?? "")) {
 			out += "\\<";
 		} else if (ch === "(" && value[i - 1] === "]") {
 			out += "\\(";
@@ -182,15 +196,42 @@ function maxBacktickRun(value: string): number {
 	return max;
 }
 
+/** One character against JS `\s`. A literal set would drift from the spec's. */
+const WS_CHAR = /\s/;
+
 /**
  * Trims an inline run into a paragraph-ready string.
  *
  * The trailing-hard-break strip matters: a `<br>` immediately before `</p>` would
  * otherwise leave a lone backslash on the last line, which renders as a literal
  * backslash rather than as nothing.
+ *
+ * Scanned by index rather than with the obvious `/(?:\s*\\\n)+\s*$/`. That pattern
+ * backtracks quadratically: on a run that does *not* end in hard breaks the engine
+ * re-tries the whole tail from every offset in it, and `<br>`-per-line paragraphs are
+ * ordinary WYSIWYG and email markup — 40 000 of them (157 KB of input) took ~15 s, and
+ * a document at the default 10 MB cap takes hours. A hang is worse than a throw, and
+ * the never-throws contract is worth nothing if the call never returns. Any
+ * `(?:\s*X)+…$` spelling has the same blow-up, so this is index arithmetic on purpose:
+ * walk left over whitespace, take a `\\\n` unit, repeat. Every character is visited at
+ * most once.
  */
 function tidyInline(value: string): string {
-	return value.replace(/(?:\s*\\\n)+\s*$/, "").trim();
+	/** Start of the trailing hard-break run, or `-1` when there is none. */
+	let cut = -1;
+	let i = value.length;
+	for (;;) {
+		// whitespace, except the `\n` of a `\\\n` — that one belongs to the unit below
+		let j = i;
+		while (
+			j > 0 && WS_CHAR.test(value[j - 1]) &&
+			!(value[j - 1] === "\n" && j >= 2 && value[j - 2] === "\\")
+		) j--;
+		if (!(j >= 2 && value[j - 1] === "\n" && value[j - 2] === "\\")) break;
+		cut = j - 2;
+		i = cut;
+	}
+	return (cut < 0 ? value : value.slice(0, cut)).trim();
 }
 
 /** Flattens an inline run onto one line — for headings, link labels and table cells. */
@@ -204,11 +245,6 @@ function emphasize(inner: string, delim: string): string {
 	const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(inner)!;
 	// `** foo **` is not emphasis; `_` and `*` need to hug their content
 	return m[2] ? `${m[1]}${delim}${m[2]}${delim}${m[3]}` : inner;
-}
-
-/** Prefixes every non-empty line with `pad` (blank lines stay blank — no trailing space). */
-function indentLines(value: string, pad: string): string {
-	return value.split("\n").map((line) => (line ? pad + line : "")).join("\n");
 }
 
 /** Lays `body` out under a list marker, indenting continuation lines to the marker width. */
@@ -252,9 +288,45 @@ function formatTitle(title: string | undefined): string {
 // inline rendering
 // ---------------------------------------------------------------------------------
 
+/**
+ * Delimiters that merge into the wrong construct when two inline runs abut.
+ *
+ * `*a**b*` is not two emphasised words: the parser reads the middle `**` as literal
+ * text inside one long `<em>`, so the second element disappears and two stray asterisks
+ * appear in the prose. Same for `**`, for `~~`, and for two adjacent code spans, whose
+ * `` `a``b` `` swallows the boundary.
+ *
+ * The test is deliberately blunt — *any* run of the same character meeting another. A
+ * mixed pair like `**a***b*` does happen to survive, by CommonMark's rule of three, but
+ * that rule is an emphasis-only subtlety that parsers implement with varying enthusiasm,
+ * and the same "unequal lengths" shape is broken for backticks (`` ``a```b` ``) and for
+ * tildes. One invariant that always holds beats a table of exceptions that mostly does.
+ */
+const MERGING_DELIMS = "*_~`";
+
+/**
+ * Emitted between two runs whose delimiters would otherwise merge.
+ *
+ * An empty HTML comment is the standard CommonMark "nothing" — it renders to no output
+ * in every parser while still breaking the delimiter run, which is exactly what an
+ * `<em>a</em><em>b</em>` boundary needs. The alternative, emitting the second run as a
+ * literal `<em>` tag, gives up markdown for the rest of that run.
+ */
+const RUN_SEPARATOR = "<!-- -->";
+
 /** Appends `value` and updates the "am I at the start of a line" flag from its tail. */
 function pushInline(ctx: Ctx, parts: string[], value: string): void {
 	if (!value) return;
+	const prev = parts.length ? parts[parts.length - 1] : "";
+	const last = prev[prev.length - 1];
+	// a backslash in front of it means the previous run ended in an *escaped* literal,
+	// which cannot pair with anything — `escapeInline` never emits a lone backslash
+	if (
+		last && last === value[0] && MERGING_DELIMS.includes(last) &&
+		prev[prev.length - 2] !== "\\"
+	) {
+		parts.push(RUN_SEPARATOR);
+	}
 	parts.push(value);
 	const nl = value.lastIndexOf("\n");
 	if (nl >= 0) ctx.lineStart = !/\S/.test(value.slice(nl + 1));
@@ -368,6 +440,13 @@ function renderInlineElement(
 ): string {
 	if (SKIP_TAGS.has(name)) return "";
 	if (depth > MAX_DEPTH) return degradeToText(el, ctx, false);
+	// linkedom hands `<textarea>` over as raw source, so its references have to be
+	// resolved on read — otherwise the literal `&amp;` of a pre-filled comment box reaches
+	// the markdown. See {@linkcode "./_dom.ts".UNDECODED_TEXT_TAGS}.
+	if (UNDECODED_TEXT_TAGS.has(name)) {
+		const value = decodeReferences(text(el));
+		return ctx.escape ? escapeInline(value, ctx.lineStart) : value;
+	}
 
 	switch (name) {
 		// CommonMark's backslash hard break rather than two trailing spaces: trailing
@@ -499,7 +578,17 @@ function languageFromClass(value: string | undefined): string | undefined {
  * No escaping, no whitespace collapsing, no re-indentation: this is the single most
  * commonly botched conversion, and a code block that has been "tidied" is worse than no
  * code block at all. The only edits are the newline HTML itself drops right after
- * `<pre>` and the trailing newline before `</pre>`, neither of which is content.
+ * `<pre>` and the trailing whitespace before `</pre>`, neither of which is content.
+ *
+ * The content comes from {@linkcode "./to-text.ts".preservedText}, not from
+ * `textContent`, and that is the whole point of sharing it: syntax highlighters and
+ * pasted-from-an-editor markup routinely emit a `<div>` (or a `<br>`) per line with no
+ * newline of their own, and reading `textContent` welded every one of those blocks onto
+ * a single line — `toText()` on the same input got it right, so the two renderers
+ * disagreed about how many lines the document had. It also replaces a
+ * `/(?:\r?\n)+[ \t]*$/` trailing strip that backtracked quadratically over a long
+ * newline run (80 000 newlines inside a `<pre>` took ~22 s), which a truncated or
+ * mangled crawled document produces without trying.
  */
 function renderPre(el: DomElement, ctx: Ctx): Block[] {
 	const inner = el.firstElementChild;
@@ -508,9 +597,7 @@ function renderPre(el: DomElement, ctx: Ctx): Block[] {
 			? languageFromClass(attr(inner, "class"))
 			: undefined);
 
-	const content = text(el)
-		.replace(/^\r?\n/, "")
-		.replace(/(?:\r?\n)+[ \t]*$/, "");
+	const content = preservedText(el);
 	if (!content) return [];
 
 	// a fence must be longer than the longest backtick run it contains, or the block
@@ -540,48 +627,180 @@ function intAttr(el: DomElement, name: string, fallback: number): number {
 	return Number.isFinite(n) ? n : fallback;
 }
 
+/** List containers that hang off the item above them when they are a list's own child. */
+const NESTED_LIST_TAGS: ReadonlySet<string> = new Set(["ul", "ol", "menu", "dir"]);
+
 /**
  * Ordered or unordered list.
  *
  * Continuation and child content is indented by exactly the marker's width — 2 for
  * `"- "`, 3 for `"1. "`, 4 for `"10. "` — which is what keeps a nested list nested
  * instead of turning into a code block.
+ *
+ * **Every child is rendered, not only the `<li>`s.** A `<ul>` nested directly inside
+ * another list instead of inside an `<li>` is invalid HTML that TinyMCE-era editors,
+ * Word exports and hand-written CMS content all emit, and that every browser draws as a
+ * nested list; filtering for `li` made its entire subtree vanish from the markdown while
+ * `toText()` still reported it, so the same document had two different amounts of
+ * content depending on which renderer you asked. Silent content loss is the worst
+ * failure mode this package has, so:
+ *
+ * - a nested list joins the item above it — the same `{list: true}` glue an `<li>`'s own
+ *   nested list already gets, so it indents under that item's marker;
+ * - with no item above it, or for anything else (stray text, a `<div>`), the content is
+ *   flushed out as its own block between two runs of items. The ordered counter keeps
+ *   running across the split, and since every marker is written out explicitly the
+ *   numbering survives being two lists.
  */
 function renderList(el: DomElement, ctx: Ctx, depth: number, ordered: boolean): Block[] {
-	const items = children(el).filter((c) => tag(c) === "li");
-	// a list-shaped element with no items is just a container
-	if (!items.length) return renderChildBlocks(el, ctx, depth);
-
+	const out: Block[] = [];
+	/** The item run being built; content between two items ends it. */
+	let items: Array<{ marker: string; blocks: Block[] }> = [];
+	/** Children that are neither an item nor a nested list, rendered together. */
+	const stray: DomNode[] = [];
 	let n = ordered ? intAttr(el, "start", 1) : 0;
-	const lines: string[] = [];
-	let raw = false;
 
-	for (const li of items) {
-		if (ordered) n = intAttr(li, "value", n);
-		const marker = ordered ? `${n}. ` : `${ctx.bullet} `;
-		const inner = renderChildBlocks(li, ctx, depth + 1);
-		if (inner.some((b) => b.raw)) raw = true;
-		lines.push(indentUnderMarker(marker, joinItemBlocks(inner)));
-		if (ordered) n++;
+	const flushItems = () => {
+		if (!items.length) return;
+		const lines = items.map((it) =>
+			indentUnderMarker(it.marker, joinItemBlocks(it.blocks))
+		);
+		const raw = items.some((it) => it.blocks.some((b) => b.raw));
+		items = [];
+		out.push({ md: lines.join("\n"), list: true, raw });
+	};
+
+	// rendered *before* the item run is ended, never after: the whitespace between two
+	// `<li>`s is a child node too, and splitting every list on it would be an own goal
+	const flushStray = () => {
+		if (!stray.length) return;
+		const blocks = renderNodeList(stray, ctx, depth);
+		stray.length = 0;
+		if (!blocks.length) return;
+		flushItems();
+		for (const b of blocks) out.push(b);
+	};
+
+	for (const node of childNodes(el)) {
+		if (isElement(node)) {
+			const name = tag(node);
+			if (name === "li") {
+				flushStray();
+				if (ordered) n = intAttr(node, "value", n);
+				items.push({
+					marker: ordered ? `${n}. ` : `${ctx.bullet} `,
+					blocks: renderChildBlocks(node, ctx, depth + 1),
+				});
+				if (ordered) n++;
+				continue;
+			}
+			if (NESTED_LIST_TAGS.has(name)) {
+				flushStray();
+				if (items.length) {
+					const item = items[items.length - 1];
+					const nested = renderBlockElement(node, name, ctx, depth + 1);
+					// only the first block glues to the item's text; anything the
+					// nested list flushed out of itself keeps its own spacing
+					for (let i = 0; i < nested.length; i++) {
+						item.blocks.push(i ? nested[i] : { ...nested[i], list: true });
+					}
+					continue;
+				}
+			}
+		}
+		stray.push(node);
 	}
-	return [{ md: lines.join("\n"), list: true, raw }];
+	flushStray();
+	flushItems();
+	return out;
 }
 
-/** Definition list: each `<dt>` on its own line, each `<dd>` indented two spaces under it. */
-function renderDl(el: DomElement, ctx: Ctx, depth: number): Block[] {
-	const lines: string[] = [];
-	let raw = false;
-	for (const child of children(el)) {
-		const name = tag(child);
-		if (name !== "dt" && name !== "dd") continue;
-		const inner = renderChildBlocks(child, ctx, depth + 1);
-		if (inner.some((b) => b.raw)) raw = true;
-		const body = joinItemBlocks(inner);
-		if (!body) continue;
-		lines.push(name === "dt" ? body : indentLines(body, "  "));
+/**
+ * A `<dl>`'s children with one level of grouping `<div>` flattened away.
+ *
+ * HTML5 explicitly allows `<dl><div><dt>…</dt><dd>…</dd></div></dl>` — MDN's own
+ * reference pages are written that way — and exactly one level of it, so this needs no
+ * recursion. Without the flattening every term and definition inside such a wrapper is
+ * neither `dt` nor `dd` from the list's point of view.
+ */
+function dlNodes(el: DomElement): DomNode[] {
+	const out: DomNode[] = [];
+	for (const node of childNodes(el)) {
+		if (tag(node) === "div") {
+			for (const inner of childNodes(node)) out.push(inner);
+		} else {
+			out.push(node);
+		}
 	}
-	if (!lines.length) return renderChildBlocks(el, ctx, depth);
-	return [{ md: lines.join("\n"), raw }];
+	return out;
+}
+
+/**
+ * Definition list: each `<dt>` a bold line, its `<dd>`s a bullet list under it.
+ *
+ * The obvious rendering — the term on its own line, the definition indented two spaces
+ * beneath it — is not a markdown construct at all. Two spaces of indentation makes a
+ * *lazy continuation line*, so the whole glossary collapses into a single run-on
+ * paragraph the moment it is rendered, which on an API-parameter page means every term
+ * runs into its own definition.
+ *
+ * `**Term**` followed by a blank line and a `-` list is plain CommonMark, renders the
+ * same in GFM, keeps the pairing visible to a reader, and lets a `<dd>` that holds
+ * blocks of its own indent under the marker like any other list item. The blank line is
+ * deliberate: a list may interrupt a paragraph in CommonMark but not in every other
+ * parser, and a definition swallowed into the term's paragraph is the bug being fixed.
+ * Consecutive `<dd>`s stay glued as items of one list.
+ *
+ * Children that are neither `<dt>` nor `<dd>` are rendered as their own blocks rather
+ * than skipped, for the same reason as in {@linkcode renderList}: dropping them loses
+ * text with no trace.
+ */
+function renderDl(el: DomElement, ctx: Ctx, depth: number): Block[] {
+	const out: Block[] = [];
+	const lines: string[] = [];
+	const stray: DomNode[] = [];
+	let raw = false;
+	let prev = "";
+
+	const flushDl = () => {
+		if (!lines.length) return;
+		out.push({ md: lines.join("\n"), raw });
+		lines.length = 0;
+		raw = false;
+		prev = "";
+	};
+
+	const flushStray = () => {
+		if (!stray.length) return;
+		const blocks = renderNodeList(stray, ctx, depth);
+		stray.length = 0;
+		if (!blocks.length) return;
+		flushDl();
+		for (const b of blocks) out.push(b);
+	};
+
+	for (const node of dlNodes(el)) {
+		const name = isElement(node) ? tag(node) : "";
+		if (!isElement(node) || (name !== "dt" && name !== "dd")) {
+			stray.push(node);
+			continue;
+		}
+		// a term or a definition ends whatever ran before it
+		flushStray();
+		const inner = renderChildBlocks(node, ctx, depth + 1);
+		// a term is one line by construction — `**` cannot span a blank line
+		const body = name === "dt" ? flatten(joinBlocks(inner)) : joinItemBlocks(inner);
+		if (!body) continue;
+		if (inner.some((b) => b.raw)) raw = true;
+		if (lines.length && !(name === "dd" && prev === "dd")) lines.push("");
+		lines.push(
+			name === "dt" ? `**${body}**` : indentUnderMarker(`${ctx.bullet} `, body),
+		);
+		prev = name;
+	}
+	flushStray();
+	flushDl();
+	return out;
 }
 
 /**
@@ -624,13 +843,63 @@ function renderCell(cell: DomElement, ctx: Ctx, depth: number): string {
 }
 
 /**
+ * The table's own HTML, filtered down to what the rest of this renderer may emit.
+ *
+ * Two things have to happen before a degraded table can be handed to a markdown
+ * consumer, and neither is optional:
+ *
+ * - **Non-content is removed.** The passthrough used to hand back `serialize(el)`
+ *   directly, which walked straight past {@linkcode SKIP_TAGS} — and since
+ *   {@linkcode "./_dom.ts".serialize} writes raw-text elements *unescaped*, a
+ *   `<script>` inside a cell of a crawled page came through byte for byte into output
+ *   this module documents as script-free. Markdown renderers pass raw HTML through by
+ *   default, so that is live script in whatever renders the result. Comments go for the
+ *   same reason: they are documented as producing nothing.
+ * - **Blank lines are removed.** A single blank line *ends* a CommonMark HTML block, so
+ *   a pretty-printed table, or one holding a `<pre>` with a blank line in it,
+ *   disintegrates halfway through: the remainder renders as escaped literal source, and
+ *   a stray `<p>` gets injected into the middle of the markup. Losing the blank lines
+ *   inside such a `<pre>` is a real cost, and it is far smaller than losing the table.
+ *
+ * The filtering runs on a **clone**: `extract()` shares one parsed document between
+ * every extractor, so mutating the real tree here would change what the others see.
+ * Returns `null` when the parser refuses to clone, which is the caller's cue to degrade
+ * further rather than emit an unfiltered copy.
+ */
+function passthroughTable(el: DomElement): string | null {
+	const clone = cloneElement(el);
+	if (!clone) return null;
+
+	// iterative, like every other walk here — a table nested 20 000 deep is real input
+	const stack: DomNode[] = [clone];
+	while (stack.length) {
+		const node = stack.pop()!;
+		// a snapshot, so removing as we go is safe
+		for (const child of childNodes(node)) {
+			if (isComment(child) || (isElement(child) && SKIP_TAGS.has(tag(child)))) {
+				remove(child);
+			} else if (isElement(child)) {
+				stack.push(child);
+			}
+		}
+	}
+
+	return serialize(clone)
+		.split("\n")
+		.filter((line) => line.trim() !== "")
+		.join("\n");
+}
+
+/**
  * GFM table when the table is rectangular, the table's own HTML when it is not.
  *
  * "Rectangular" means no cell spans more than one row or column and every row has the
  * same number of cells. GFM cannot express anything else, and the alternatives to
  * degrading — dropping the cells that do not fit, or emitting a row of the wrong width —
  * both lose or reorder data silently. Passthrough HTML is ugly and honest; a markdown
- * consumer that cares can parse it, and one that does not still sees every value.
+ * consumer that cares can parse it, and one that does not still sees every value. What
+ * it is *not* is a hole in the rules the rest of the renderer follows — see
+ * {@linkcode passthroughTable}.
  *
  * The header row is `<thead>`'s first row when there is a `<thead>`, and otherwise the
  * first row — including when that row is plain `<td>`s. GFM has no headerless table, so
@@ -662,7 +931,12 @@ function renderTable(el: DomElement, ctx: Ctx, depth: number): Block[] {
 		ctx.logger?.debug(
 			`[html-extract] markdown: table is not rectangular (${rows.length} row(s)), degrading to passthrough HTML`,
 		);
-		return [{ md: serialize(el), raw: true }];
+		const html = passthroughTable(el);
+		if (html) return [{ md: html, raw: true }];
+		ctx.logger?.warn(
+			"[html-extract] markdown: could not clone the table for passthrough, rendering its cells as text",
+		);
+		return renderChildBlocks(el, ctx, depth);
 	}
 
 	const blocks: Block[] = [];
@@ -830,7 +1104,13 @@ export function markdownFromDocument(
  *   fenced with enough backticks to clear any run inside it. The language comes from a
  *   `language-xxx`/`lang-xxx` class on the `<pre>` or its `<code>`.
  * - Tables become GFM **only when rectangular**; anything with a `colspan`, a `rowspan`
- *   or a ragged row degrades to its own HTML rather than to a broken table.
+ *   or a ragged row degrades to its own HTML rather than to a broken table. That HTML
+ *   is filtered the same way the rest of the output is — no `<script>`, no comments —
+ *   and stripped of blank lines, which would otherwise end the HTML block halfway
+ *   through the table.
+ * - Lists render every child, including a `<ul>` nested directly inside another list
+ *   rather than inside an `<li>`; a `<dl>` becomes a bold term with its definitions as
+ *   a list under it, both of which survive being rendered.
  * - Links and images resolve against `<base href>` or {@linkcode MarkdownOptions.url};
  *   destinations that need it get the `<…>` form.
  * - Escaping is minimal and context-aware (see the module source) rather than the usual

@@ -1,0 +1,16 @@
+{
+	"metadata": {
+		"favicon": "https://notes.example/favicon.ico",
+		"openGraph": {},
+		"twitter": {},
+		"meta": {}
+	},
+	"jsonLd": [],
+	"embeddedJsonKeys": [],
+	"microdata": [],
+	"content": {
+		"via": "scored",
+		"textLength": 739,
+		"linkDensity": 0
+	}
+}

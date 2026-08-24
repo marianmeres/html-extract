@@ -1,0 +1,60 @@
+{
+	"title": "Field notes: the tide gauge & the gull",
+	"lang": "en-AU",
+	"metadata": {
+		"title": "Field notes: the tide gauge & the gull",
+		"lang": "en-AU",
+		"publishedAt": "March 2024",
+		"modifiedAt": "2024-03-12T06:41:00.000Z",
+		"favicon": "https://notes.example/favicon.ico",
+		"openGraph": {},
+		"twitter": {},
+		"meta": {
+			"date": "March 2024",
+			"last-modified": "Tue, 12 Mar 2024 06:41:00 GMT"
+		}
+	},
+	"jsonLd": [
+		{
+			"@context": "https://schema.org",
+			"@type": "Organization",
+			"name": "Coastal Watch Trust",
+			"url": "https://coastalwatch.example/"
+		},
+		{
+			"@context": "https://schema.org",
+			"@type": "BreadcrumbList",
+			"itemListElement": [
+				{
+					"@type": "ListItem",
+					"position": 1,
+					"name": "Logs"
+				}
+			]
+		}
+	],
+	"embeddedJsonKeys": [],
+	"microdata": [
+		{
+			"type": [
+				"https://schema.org/Observation"
+			],
+			"properties": {
+				"name": [
+					"Tide gauge NP-1"
+				],
+				"toString": [
+					"© 2026 Coastal Watch Trust"
+				],
+				"constructor": [
+					"brass and stainless"
+				]
+			}
+		}
+	],
+	"content": {
+		"via": "semantic",
+		"textLength": 747,
+		"linkDensity": 0.02
+	}
+}

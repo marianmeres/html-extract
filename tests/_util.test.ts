@@ -268,3 +268,20 @@ Deno.test("isSuspiciousUrl: sees through whitespace and control characters", () 
 	assert(!isSuspiciousUrl(undefined));
 	assert(!isSuspiciousUrl(""));
 });
+
+Deno.test("collapseBlankLines: a long horizontal run does not hang", () => {
+	// the pair of regexes this replaced backtracked over the whole run from every start
+	// position — ~5.8 s for 80 000 tabs, and one refactor away from being reachable
+	const started = performance.now();
+	const out = collapseBlankLines(`word ${"\t".repeat(80_000)}x`);
+	assertEquals(out.endsWith("x"), true);
+	assertEquals(out.startsWith("word"), true);
+	assert(performance.now() - started < 1000, "collapseBlankLines is quadratic again");
+});
+
+Deno.test("collapseBlankLines: interior spacing survives, line ends do not", () => {
+	assertEquals(collapseBlankLines("a\tb\tc"), "a\tb\tc");
+	assertEquals(collapseBlankLines("a  \n  b"), "a\n  b");
+	assertEquals(collapseBlankLines("a\n \n \nb"), "a\n\nb");
+	assertEquals(collapseBlankLines("x\r\ny"), "x\ny");
+});

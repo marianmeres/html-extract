@@ -10,6 +10,7 @@
 
 import {
 	childNodes,
+	children,
 	cloneElement,
 	type DomElement,
 	type DomNode,
@@ -49,6 +50,13 @@ const ALWAYS_DROP_TAGS: ReadonlySet<string> = new Set([
  * Without this list {@linkcode CleanOptions.dropEmpty} would quietly delete every
  * image, every embed and every table skeleton in the document — the exact opposite of
  * "removes empty wrappers".
+ *
+ * The membership rule is "its meaning lives in its attributes, not in its text", which
+ * is why the media and embed tags are joined by the table skeleton (`col`, `colgroup`
+ * next to `table`/`td`/`th`), the media sub-resources (`track` next to `source`) and
+ * the form controls (`select`, `option`, `textarea` next to `input`) — an
+ * `<option value="a"></option>` carries its whole payload in `value`, and dropping it
+ * silently emptied the `<select>` around it.
  */
 const MEDIA_TAGS: ReadonlySet<string> = new Set([
 	"img",
@@ -56,18 +64,56 @@ const MEDIA_TAGS: ReadonlySet<string> = new Set([
 	"video",
 	"audio",
 	"source",
+	"track",
 	"iframe",
 	"br",
 	"hr",
 	"input",
+	"select",
+	"option",
+	"textarea",
 	"svg",
+	"math",
 	"canvas",
 	"embed",
 	"object",
 	"table",
+	"col",
+	"colgroup",
 	"td",
 	"th",
 ]);
+
+/**
+ * Roots of *foreign content* — subtrees that are not HTML and do not play by HTML's
+ * emptiness rules.
+ *
+ * Inside an `<svg>` nothing holds text: `<path>`, `<g>`, `<circle>`, `<use>`,
+ * `<linearGradient>` all carry their entire meaning in attributes, and none of them
+ * could sanely be enumerated in {@linkcode MEDIA_TAGS} (SVG has well over a hundred
+ * elements, MathML its own set). Judging them by the HTML rule stripped every inline
+ * icon and diagram down to an empty `<svg>` shell — the exact failure `MEDIA_TAGS`
+ * exists to prevent. So {@linkcode dropEmptyPass} treats one of these as a leaf and
+ * never looks inside.
+ *
+ * The cost is that a genuinely junk `<svg>` full of empty `<g>`s survives intact. That
+ * is the right trade: a spurious wrapper is noise, a deleted diagram is data loss.
+ */
+const FOREIGN_TAGS: ReadonlySet<string> = new Set(["svg", "math"]);
+
+/**
+ * The "attributes of value" of {@linkcode CleanOptions.dropEmpty}: attributes that make
+ * an otherwise empty element *addressable*, and therefore worth keeping.
+ *
+ * Deliberately just these two. An `<a id="section-3"></a>` or `<a name="top"></a>` is
+ * not a wrapper at all — it is the target every in-document link points at, and
+ * deleting it breaks links that survive the clean. Nothing else qualifies: `class` and
+ * `style` are presentational (and every empty `<div>` on a real page carries one, so
+ * honouring them would make `dropEmpty` a no-op), `data-*` is the rabbit hole
+ * {@linkcode URL_ATTRS} already refuses to enter, and an `<a href>` with no text is a
+ * link with no label — nothing a reader can see or click.
+ */
+const ADDRESSABLE_ATTRS: ReadonlySet<string> = new Set(["id", "name"]);
 
 /**
  * Attributes whose value is a URL, and which are therefore checked against
@@ -221,11 +267,31 @@ function structuralPass(root: DomElement, opts: Resolved, stats: Stats): void {
 	}
 }
 
-/** `true` when the element holds text, or a comment we were told to keep, directly. */
+/**
+ * `true` when the element carries substance of its own — text, a comment we were told
+ * to keep, or an {@linkcode ADDRESSABLE_ATTRS} attribute.
+ *
+ * "Of its own" is the point: substance inherited from a surviving child is handled by
+ * {@linkcode dropEmptyPass}'s upward propagation, so this only ever looks one level
+ * down and at the element itself.
+ */
 function hasOwnSubstance(el: DomElement, opts: Resolved): boolean {
 	for (const child of childNodes(el)) {
 		if (isText(child) && (child.textContent ?? "").trim() !== "") return true;
 		if (opts.keepComments && isComment(child)) return true;
+	}
+	// an `id`/`name` makes an empty element a link target rather than a wrapper; scanned
+	// inline rather than via `attr()` so a document-sized pass allocates nothing
+	const list = el.attributes;
+	if (list) {
+		for (let i = 0; i < list.length; i++) {
+			const a = list[i];
+			if (!a) continue;
+			if (
+				ADDRESSABLE_ATTRS.has(String(a.name).toLowerCase()) &&
+				String(a.value ?? "").trim() !== ""
+			) return true;
+		}
 	}
 	return false;
 }
@@ -238,11 +304,16 @@ function hasOwnSubstance(el: DomElement, opts: Resolved): boolean {
  * children that emptied it. The "has media" flag is propagated upwards as we go rather
  * than re-queried per element, which keeps the pass linear on documents that nest
  * pathologically.
+ *
+ * Foreign content is exempt wholesale — see {@linkcode FOREIGN_TAGS}.
  */
 function dropEmptyPass(root: DomElement, opts: Resolved, stats: Stats): void {
 	const all: DomElement[] = [];
 	walkElements(root, (el) => {
 		if (el !== root) all.push(el);
+		// stop at an <svg>/<math>: the element itself is media and survives, and its
+		// descendants are not HTML, so the emptiness rule below must never see them
+		if (FOREIGN_TAGS.has(tag(el))) return false;
 	});
 
 	// reversing a parents-before-children walk visits every descendant before its parent
@@ -272,7 +343,12 @@ function dropEmptyPass(root: DomElement, opts: Resolved, stats: Stats): void {
  * {@linkcode CleanOptions.allowTags} classify it — removing the caller's own handle
  * would leave them holding a detached node.
  *
- * Everything else follows {@linkcode clean}, including the "not a sanitizer" caveat.
+ * Everything else follows {@linkcode clean}, including the "not a sanitizer" caveat —
+ * with one exception it cannot offer: {@linkcode clean} re-parses an allowlisted result
+ * so that unwrapping never leaves `<p>` inside `<p>` (see `normalizeNesting`), and an
+ * in-place caller holding a live node has no round trip to spend. Pass
+ * {@linkcode CleanOptions.allowTags} here only if you are going to re-parse the
+ * serialization yourself.
  */
 export function cleanNode(el: DomElement, options?: CleanOptions): void {
 	if (!isElement(el)) return;
@@ -316,8 +392,64 @@ export function cleanFromDocument(doc: ParsedDocument, options?: CleanOptions): 
 		);
 	}
 	const root = clone ?? doc.body;
+	dropHead(root, logger);
 	cleanNode(root, options);
 	return serializeChildren(root);
+}
+
+/**
+ * Drops a `<head>` child, but only from a container that is the document element.
+ *
+ * {@linkcode "./_dom.ts".parseDocument} deliberately falls back to `documentElement`
+ * when `<body>` has no children — the fallback fragments depend on. For a *real* page
+ * whose body is empty or was cut off mid-`<head>` (a truncated crawl, a `maxSize` that
+ * landed in the wrong place) that fallback hands us `<html>` instead, and serializing
+ * its children emitted the head as if it were body content — contradicting
+ * {@linkcode clean}'s "the `<head>` is not part of the output".
+ *
+ * Removing just the head, rather than switching to the `<body>` child, is the
+ * conservative repair: linkedom is not a spec tree builder and can leave stray content
+ * directly under `<html>`, which is body content by any reading and must survive.
+ */
+function dropHead(root: DomElement, logger?: Logger): void {
+	if (tag(root) !== "html") return;
+	for (const child of children(root)) {
+		if (tag(child) !== "head") continue;
+		remove(child);
+		logger?.debug(
+			"[html-extract] clean: empty <body>, dropping <head> from the output",
+		);
+	}
+}
+
+/**
+ * Re-cleans an allowlisted result so the output is a *parser fixed point*.
+ *
+ * Unwrapping is a raw DOM move, and it can leave an allowed element as a direct child
+ * of another instance of itself — `<p>` in `<p>`, `<li>` in `<li>` — which no HTML
+ * parser will ever build. Serializing that emits markup that reads back as a
+ * **different** tree, so the output is both invalid and non-idempotent:
+ * `clean('<div><p>a<span><p>b</p></span></p></div>', { allowTags: ["p"] })` gave
+ * `<p>a<p>b</p></p>` on the first pass and `<p>a</p><p>b</p>` on the second.
+ *
+ * Letting the parser arbitrate is what makes the two agree, and it also gives the
+ * better answer: the parser *splits* the paragraph, where re-parenting by hand would
+ * have to merge it and lose the break.
+ *
+ * Exactly one extra round trip is enough, and that is a property of the pass rather
+ * than a hope: the first pass has already unwrapped every non-allowed element, so the
+ * second finds nothing left to unwrap and cannot re-create the nesting. `maxSize` is
+ * lifted for it — the input was bounded by the first parse already, while escaping
+ * (`&` → `&amp;`) can push a cleaned string back over the limit and truncate content
+ * that had survived.
+ */
+function normalizeNesting(html: string, options?: CleanOptions): string {
+	if (html === "") return "";
+	const doc = parseDocument(html, {
+		maxSize: Number.POSITIVE_INFINITY,
+		logger: options?.logger,
+	});
+	return doc ? cleanFromDocument(doc, options) : html;
 }
 
 /**
@@ -346,8 +478,10 @@ export function cleanFromDocument(doc: ParsedDocument, options?: CleanOptions): 
  *    tag but keeps its paragraphs.
  * 4. Strips `on*` attributes and `javascript:`-family URLs, unless
  *    {@linkcode CleanOptions.dropEventHandlers} is `false`.
- * 5. Removes elements left with no text and no media, bottom-up, unless
- *    {@linkcode CleanOptions.dropEmpty} is `false`.
+ * 5. Removes elements left with no text, no media and no `id`/`name` to be linked to,
+ *    bottom-up, unless {@linkcode CleanOptions.dropEmpty} is `false`. `<svg>` and
+ *    `<math>` subtrees are exempt wholesale — they are not HTML and nothing inside them
+ *    holds text, so the rule would strip an inline icon to an empty shell.
  *
  * The return value is the **body content**: a fragment in gives a fragment out, a whole
  * `<!doctype html>` page in gives just what was inside `<body>` (its `<head>` is not
@@ -378,5 +512,6 @@ export function clean(html: string, options?: CleanOptions): string {
 		options?.logger?.debug('[html-extract] clean: nothing to parse, returning ""');
 		return "";
 	}
-	return cleanFromDocument(doc, options);
+	const out = cleanFromDocument(doc, options);
+	return Array.isArray(options?.allowTags) ? normalizeNesting(out, options) : out;
 }

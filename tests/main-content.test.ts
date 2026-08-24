@@ -378,3 +378,158 @@ Deno.test("a logger explains the outcome without changing it", () => {
 		"a null result must be explained at debug",
 	);
 });
+
+Deno.test("scored: an article survives the wrapper divs a page builder puts around it", () => {
+	// Gutenberg group blocks and Elementor widgets wrap EVERY paragraph in two <div>s of
+	// their own, which puts the real container three or more generations above the text.
+	// Points used to stop at the grandparent, so the container scored nothing at all —
+	// not even its `entry-content` hint, which is only consulted for elements that scored
+	// — and the winner was the innermost wrapper around a single paragraph.
+	const paragraphs = [P1, P2, P3, P1, P2, P3];
+
+	for (const depth of [0, 1, 2, 3, 4]) {
+		const blocks = paragraphs
+			.map((p) => {
+				let block = `<p>${p}</p>`;
+				for (let i = 0; i < depth; i++) {
+					block = `<div class="wp-block-group__inner-container">${block}</div>`;
+				}
+				return block;
+			})
+			.join("\n");
+		const html = `<!doctype html><html><body>
+			<div class="entry-content">${blocks}</div>
+		</body></html>`;
+
+		const content = extractMainContent(html);
+		assert(content, `depth ${depth}: expected content`);
+		assertEquals(content.via, "scored", `depth ${depth}`);
+		const text = content.text();
+		assertStringIncludes(text, "slack water");
+		assertStringIncludes(text, "wintering dunlin");
+		assertStringIncludes(text, "saltmarsh restoration");
+		// the whole article, not the one paragraph that happened to sit in the
+		// best-scoring leaf wrapper
+		assert(
+			content.textLength > 1200,
+			`depth ${depth}: only ${content.textLength} chars came back`,
+		);
+	}
+});
+
+Deno.test("scored: a comment thread does not pay the shell that contains it", () => {
+	// The other half of the longer ancestor reach. `<div id="page">` is the standard
+	// WordPress theme wrapper and `page` is a POSITIVE hint, so the shell starts 25 points
+	// ahead; let the thread's paragraphs go on paying it and the shell out-scores the
+	// article, taking every comment with it. Propagation stops at the first ancestor the
+	// class/id vocabulary calls chrome.
+	const comments = Array.from(
+		{ length: 12 },
+		(_, i) =>
+			`<div class="comment"><p>Commenter ${i} is quite sure the tide tables were read
+			the wrong way round, and says so at considerable length below.</p></div>`,
+	).join("");
+
+	const body = [P1, P2, P3]
+		.map((p) =>
+			`<div class="wp-block-group"><div class="wp-block-group__inner-container">` +
+			`<p>${p}</p></div></div>`
+		)
+		.join("");
+
+	const html = `<!doctype html><html><body>
+		<div id="page"><div id="wrap">
+			<div class="entry-content">${body}</div>
+			<div id="comments">${comments}</div>
+		</div></div>
+	</body></html>`;
+
+	const content = extractMainContent(html);
+	assert(content, "expected content");
+	const text = content.text();
+	assertStringIncludes(text, "slack water");
+	assertStringIncludes(text, "saltmarsh restoration");
+	assert(!text.includes("Commenter 0"), "the comment thread leaked in");
+	assert(!text.includes("Commenter 11"), "the comment thread leaked in");
+});
+
+Deno.test("scored: nested candidates do not make scoring quadratic", () => {
+	// A document whose </div>s were lost nests every block inside every earlier one, so
+	// every candidate is an ancestor of every later one. Measuring link density per
+	// candidate walked that candidate's whole subtree twice, which made the phase
+	// O(depth x document): 4000 blocks took 19.6 s and quadrupled on every doubling,
+	// against 36 ms for toText() on the same input. One bottom-up pass makes it linear.
+	// Broken markup is a first-class input here, so this is a real page, not a fuzz case.
+	const parts: string[] = [];
+	for (let i = 0; i < 4000; i++) {
+		parts.push(`<div class="mod"><div class="inner"><p>${P1}</p>`);
+	}
+	const html = `<!doctype html><html><body>${parts.join("")}</body></html>`;
+
+	const started = performance.now();
+	const content = extractMainContent(html);
+	const elapsed = performance.now() - started;
+
+	assert(content, "expected content");
+	assertStringIncludes(content.text(), "slack water");
+	// deliberately generous: this is a complexity guard, not a benchmark. It runs in
+	// ~0.3 s now and took ~20 s before, so a slow machine has an order of magnitude of
+	// room and a reintroduced quadratic still fails.
+	assert(
+		elapsed < 6000,
+		`scoring took ${
+			elapsed.toFixed(0)
+		} ms on 4000 nested blocks — it is quadratic again`,
+	);
+});
+
+Deno.test("semantic: [role=main] is found however the attribute is spelled", () => {
+	// The selector engine matches attribute NAMES case-sensitively, so `[role=main]` used
+	// to miss <div ROLE="main"> and the page fell all the way through to scoring, which
+	// picked the comment thread. This is the quirk _dom.ts's attr() exists for.
+	const thread = Array.from(
+		{ length: 12 },
+		(_, i) =>
+			`<div class="post"><p>Commenter ${i} wrote a long reply about the tides, the
+			weather, and the birds that were not there.</p></div>`,
+	).join("");
+
+	for (const spelling of ['role="main"', 'ROLE="main"', 'Role="Main"']) {
+		const html = `<!doctype html><html><body>
+			<div ${spelling}><h1>Estuary bird counts</h1><p>${P1}</p><p>${P2}</p></div>
+			<div class="thread">${thread}</div>
+		</body></html>`;
+
+		const content = extractMainContent(html);
+		assert(content, `${spelling}: expected content`);
+		assertEquals(content.via, "semantic", spelling);
+		assertStringIncludes(content.text(), "slack water");
+		assert(!content.text().includes("Commenter 0"), `${spelling}: the thread won`);
+	}
+});
+
+Deno.test("html carries the winning element's own tag on the scored path too", () => {
+	// The docs used to claim the opposite. `assemble()` serializes the winner itself (plus
+	// any accepted siblings) and only the synthetic re-parse container is stripped, so a
+	// caller who wraps `html` in a container of their own gets a doubled wrapper.
+	const html = `<!doctype html><html><body>
+		<div id="layout">
+			<div class="entry-body"><p>${P1}</p><p>${P2}</p><p>${P3}</p></div>
+		</div>
+	</body></html>`;
+
+	const content = extractMainContent(html)!;
+	assertEquals(content.via, "scored");
+	assertStringIncludes(content.html, `<div class="entry-body">`);
+	// …but the parent it was lifted out of is not part of the output
+	assert(!content.html.includes(`id="layout"`), "the assembled wrapper leaked out");
+
+	// the one documented exception: a winner that IS the body has no tag worth emitting
+	const bare = `<!doctype html><html><body>
+		<p>${P1}</p><p>${P2}</p><p>${P3}</p>
+	</body></html>`;
+	const flat = extractMainContent(bare)!;
+	assertEquals(flat.via, "scored");
+	assert(!flat.html.includes("<body"), "the body tag leaked into html");
+	assertStringIncludes(flat.html, "<p>");
+});

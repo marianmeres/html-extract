@@ -21,6 +21,16 @@ export const FIXTURES_DIR: string = fromFileUrl(new URL("./fixtures", import.met
  * table/code torture test, an email fragment with no `<html>` at all, and two genuinely
  * broken documents. Every one of them is a shape that has, at some point, made a naive
  * extractor produce nonsense.
+ *
+ * Two of them exist because an adversarial review found defects this corpus could not
+ * reach, which is the more useful lesson: a corpus of *realistic* pages only ever tests
+ * the paths realistic pages take. `pathological` carries the awkward-but-legal markup —
+ * uppercase `LANG=`/`ROLE=`, an `itemprop` named `toString`, a `<base target>` shadowing
+ * the real `<base href>`, JSON-LD that is only site furniture, a date no parser should
+ * guess at, an article four wrapper divs above its paragraphs. `rendering-corners`
+ * carries the markdown constructs that were silently lost or emitted broken — a list
+ * nested directly in a list, `<dl>`, `<ol start>`, a line of tildes, adjacent emphasis
+ * runs, a ragged table, `<textarea>` (RCDATA) beside `<xmp>` (RAWTEXT).
  */
 export async function loadFixtures(): Promise<Fixture[]> {
 	const out: Fixture[] = [];

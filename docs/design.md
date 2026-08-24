@@ -34,7 +34,12 @@
 >   throwing (forbidden by §9) or returning nothing for a document that still carries
 >   perfectly good metadata in its first kilobyte.
 >
-> One correction to the text below: §10's inline-crawl snippet
+> Two corrections to the text below. §5's "Propagate scores to ancestors (parent full,
+> grandparent half)" describes a rule that loses the article whenever its container sits
+> more than two levels above its paragraphs — ordinary page-builder markup. The
+> implementation propagates up to five ancestors with a decaying divider and stops at the
+> first negatively-hinted one; `src/main-content.ts` documents why. And §10's inline-crawl
+> snippet
 > (`onPage: async (res) => extract(await res.text(), …)`) does not compile. The crawler's
 > `PageResult` deliberately carries no body — it is on the second argument, as
 > `ctx.fetchResult`. `README.md` carries the corrected, type-checked form.

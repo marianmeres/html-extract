@@ -4,6 +4,7 @@ import {
 	attrs,
 	classId,
 	cloneElement,
+	decodeReferences,
 	dropAll,
 	parseDocument,
 	query,
@@ -229,4 +230,16 @@ Deno.test("serialize: <title> is escaped, because linkedom decodes its entities"
 	const twice = serializeChildren(parseDocument(once)!.root);
 	assertEquals(once, twice);
 	assertEquals(once.includes("&lt;b&gt;b&lt;/b&gt;"), true);
+});
+
+Deno.test("decodeReferences: a prototype-named reference is left alone", () => {
+	// `&toString;` and `&valueOf;` both match the name pattern, and a prototyped lookup
+	// table answers them with a function — which then reaches the page's text as
+	// "function toString() { [native code] }"
+	assertEquals(decodeReferences("&toString;"), "&toString;");
+	assertEquals(decodeReferences("&valueOf;"), "&valueOf;");
+	assertEquals(decodeReferences("&constructor;"), "&constructor;");
+	// and the real ones still resolve
+	assertEquals(decodeReferences("a &amp; b &lt;c&gt; &#169; &#xa9;"), "a & b <c> © ©");
+	assertEquals(decodeReferences("&copy;"), "&copy;");
 });
