@@ -108,3 +108,82 @@ Deno.test("extractMicrodata: throws only on a wrong argument type", () => {
 	// deno-lint-ignore no-explicit-any
 	assertThrows(() => extractMicrodata(7 as any), TypeError);
 });
+
+/**
+ * Reads a property by a runtime key. TypeScript resolves `props.constructor` and
+ * `props.toString` against `Object`, not against the index signature, so the literal
+ * form does not type-check even though it is exactly what a caller writes.
+ */
+function prop(item: MicrodataItem, name: string): (string | MicrodataItem)[] {
+	return item.properties[name];
+}
+
+/** Every own member of `Object.prototype` a page could name an `itemprop` after. */
+const PROTO_NAMES = [
+	"constructor",
+	"toString",
+	"toLocaleString",
+	"valueOf",
+	"hasOwnProperty",
+	"isPrototypeOf",
+	"propertyIsEnumerable",
+	"__proto__",
+];
+
+Deno.test("extractMicrodata: an itemprop named after Object.prototype is data", () => {
+	for (const name of PROTO_NAMES) {
+		const html = `<div itemscope><span itemprop="${name}">v</span></div>`;
+		const items = extractMicrodata(html);
+		assertEquals(items.length, 1, `${name}: no item`);
+		assertEquals(items[0].properties[name], ["v"], `${name}: wrong value`);
+		// repeats still accumulate rather than overwrite or blow up
+		const twice = extractMicrodata(
+			`<div itemscope><span itemprop="${name}">a</span><span itemprop="${name}">b</span></div>`,
+		);
+		assertEquals(twice[0].properties[name], ["a", "b"], `${name}: not accumulated`);
+	}
+});
+
+Deno.test("extractMicrodata: properties is a plain dictionary, prototype and all", () => {
+	const [item] = extractMicrodata(
+		`<div itemscope><span itemprop="toString">v</span></div>`,
+	);
+	// the null prototype is the fix, and is documented — a page's property name can
+	// never collide with an inherited member again
+	assertEquals(Object.getPrototypeOf(item.properties), null);
+	// …and everything a caller does with a dictionary keeps working
+	assertEquals(Object.keys(item.properties), ["toString"]);
+	assertEquals(Object.entries(item.properties), [["toString", ["v"]]]);
+	assertEquals(JSON.stringify(item), `{"properties":{"toString":["v"]}}`);
+	assertEquals(JSON.parse(JSON.stringify(item)).properties.toString, ["v"]);
+	const spread: Record<string, unknown> = { ...item.properties };
+	assertEquals(Object.entries(spread), [["toString", ["v"]]]);
+});
+
+Deno.test("extractMicrodata: a nested item's properties behave the same", () => {
+	const html = `<div itemscope itemtype="https://schema.org/Product">
+		<span itemprop="valueOf">outer</span>
+		<div itemprop="offers" itemscope>
+			<meta itemprop="constructor" content="inner">
+		</div>
+	</div>`;
+	const [item] = extractMicrodata(html);
+	const offer = item.properties.offers[0] as MicrodataItem;
+	assertEquals(prop(offer, "constructor"), ["inner"]);
+	assertEquals(Object.getPrototypeOf(offer.properties), null);
+	assertEquals(
+		JSON.stringify(item),
+		`{"type":["https://schema.org/Product"],"properties":` +
+			`{"valueOf":["outer"],"offers":[{"properties":{"constructor":["inner"]}}]}}`,
+	);
+});
+
+Deno.test("extractMicrodata: a tag named after Object.prototype has no value attr", () => {
+	// `<constructor>` used to hit `VALUE_ATTR["constructor"]` and hand the `Object`
+	// function to attr() as an attribute name
+	for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+		const html =
+			`<div itemscope><${name} itemprop="p" content="ignored">v</${name}></div>`;
+		assertEquals(prop(extractMicrodata(html)[0], "p"), ["v"], name);
+	}
+});

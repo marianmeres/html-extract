@@ -20,6 +20,9 @@
  *   `getAttribute("class")`) — so {@linkcode attr} falls back to a case-insensitive
  *   scan.
  * - No implied `<tbody>` is inserted — so row queries must never assume one.
+ * - `<textarea>` and `<xmp>` are parsed as *raw* text: their `textContent` is the
+ *   undecoded source. So they belong in {@linkcode RAW_TEXT_TAGS}, or serialization
+ *   escapes them a second time.
  * - Serialization does not re-escape `&` in attribute values — so this module ships its
  *   own {@linkcode serialize}, which also gives us stable, canonical output (lowercased
  *   attribute names, deduped attributes) and therefore `clean(clean(x)) === clean(x)`.
@@ -99,8 +102,16 @@ export interface ParsedDocument {
 // parsing
 // ---------------------------------------------------------------------------------
 
-/** How much of the head of the input is sniffed for a document wrapper. */
-const SNIFF_LENGTH = 8192;
+/**
+ * Wraps input in a minimal document. Only ever called for input with no `<html>` of its
+ * own, so the one decision left is whether it also needs a `<body>`: a stray `<body>` or
+ * `<head>` must not end up nested inside a second one.
+ */
+function wrapDocument(html: string): string {
+	return /<(?:body|head)[\s/>]/i.test(html)
+		? `<!doctype html><html>${html}</html>`
+		: `<!doctype html><html><body>${html}</body></html>`;
+}
 
 /**
  * Wraps bare fragments in a minimal document.
@@ -109,12 +120,20 @@ const SNIFF_LENGTH = 8192;
  * document whose `documentElement` is that `<div>` and whose `body` is an empty stub —
  * a trap that silently returns "" from every body-based read. Wrapping first makes
  * `<p>hello</p>`, an email body and a full `<!doctype html>` page behave identically.
+ *
+ * The `<html>` test deliberately scans the **whole** input rather than a fixed-size head
+ * of it. A window is worse than useless here: it is linear either way (and negligible
+ * next to the parse that follows), while a document whose `<html>` sits past the window
+ * — an 8 KB licence comment, a conditional-comment preamble — gets wrapped a second time
+ * and loses its real root, taking `lang` with it. Being wrong only for long preambles is
+ * the worst kind of wrong: it makes identical documents behave differently by length.
+ *
+ * The scan can still say yes to a fragment that merely *mentions* `<html` inside a
+ * script string or a comment; {@linkcode parseDocument} catches that by checking what
+ * the parser actually built.
  */
 function wrapFragment(html: string): string {
-	const sniff = html.length > SNIFF_LENGTH ? html.slice(0, SNIFF_LENGTH) : html;
-	if (/<html[\s/>]/i.test(sniff)) return html;
-	if (/<(?:body|head)[\s/>]/i.test(sniff)) return `<!doctype html><html>${html}</html>`;
-	return `<!doctype html><html><body>${html}</body></html>`;
+	return /<html[\s/>]/i.test(html) ? html : wrapDocument(html);
 }
 
 /**
@@ -143,18 +162,35 @@ export function parseDocument(
 	}
 
 	try {
-		const { document } = parseHTML(wrapFragment(src)) as unknown as {
-			document: {
-				documentElement: DomElement | null;
-				body: DomElement | null;
-			};
-		};
-		const root = document?.documentElement;
+		const parse = (input: string) =>
+			(parseHTML(input) as unknown as {
+				document: {
+					documentElement: DomElement | null;
+					body: DomElement | null;
+				} | null;
+			}).document;
+
+		let document = parse(wrapFragment(src));
+		let root = document?.documentElement;
+		// `wrapFragment` sniffs text, so it says "already a document" for a fragment that
+		// only mentions `<html` in a script string or a comment — and that fragment then
+		// parses into the degenerate shape this whole dance exists to avoid. The parser's
+		// own verdict is the reliable one: a real document roots at `<html>`. Re-parsing
+		// wrapped costs a second parse, but only for input that was misread.
+		if (root && tag(root) !== "html") {
+			logger?.debug(
+				`[html-extract] <${tag(root)}> root: re-parsing the input as a fragment`,
+			);
+			document = parse(wrapDocument(src));
+			root = document?.documentElement;
+		}
 		if (!root) {
 			logger?.debug("[html-extract] parser returned no document element");
 			return null;
 		}
-		const body = document.body && document.body.childNodes.length > 0
+		// reading `document.body` before the null check above would throw: linkedom's
+		// getter walks `documentElement` unguarded
+		const body = document?.body && document.body.childNodes.length > 0
 			? document.body
 			: root;
 		return { root, body, truncated };
@@ -236,9 +272,23 @@ export function attr(
 	return direct === null || direct === undefined || direct === "" ? undefined : direct;
 }
 
-/** All attributes as a plain object with lowercased, deduplicated names (first wins). */
+/**
+ * All attributes as a plain object with lowercased, deduplicated names (first wins).
+ *
+ * The map is **prototype-less** on purpose, and it is load-bearing rather than hygiene
+ * theatre: attribute names come from the document, so they can be any string, including
+ * the ones `Object.prototype` already answers to. On a normal `{}`,
+ * `"constructor" in out` is `true` before a single attribute is read, so
+ * `<div constructor="x">` looks like a duplicate and vanishes from every serialization;
+ * `__proto__` is worse, being an inherited *setter* rather than a slot. With no
+ * prototype there are no inherited names, `in` means exactly "already seen", and every
+ * attribute round-trips.
+ *
+ * The flip side: no `out.hasOwnProperty(…)` and no `out.toString()` on the result. Use
+ * `Object.hasOwn` / `Object.entries`, which is all this package does with it.
+ */
 export function attrs(el: DomElement | null | undefined): Record<string, string> {
-	const out: Record<string, string> = {};
+	const out: Record<string, string> = Object.create(null);
 	if (!isElement(el)) return out;
 	const list = el.attributes;
 	if (!list) return out;
@@ -413,8 +463,29 @@ export const VOID_TAGS: ReadonlySet<string> = new Set([
 	"wbr",
 ]);
 
-/** Elements whose text content is raw — never escape it, never descend into it. */
-export const RAW_TEXT_TAGS: ReadonlySet<string> = new Set(["script", "style"]);
+/**
+ * Elements whose text content is raw — never escape it, never descend into it.
+ *
+ * This is the **parser's** list, not the spec's, and the two disagree. What matters for
+ * {@linkcode serialize} is only whether `textContent` still holds the *source* text: if
+ * it does, escaping on the way out adds an `&amp;` layer per pass and
+ * `clean(clean(x)) === clean(x)` fails — `<textarea>Tom &amp; Jerry</textarea>` came back
+ * out as `Tom &amp;amp; Jerry`, then `&amp;amp;amp;`, without bound.
+ *
+ * Verified against linkedom 0.18 by parsing `<TAG>&amp;<b>x</b></TAG>` and inspecting the
+ * children: `script`, `style`, `textarea` and `xmp` each keep one text child holding the
+ * untouched source (`"&amp;<b>x</b>"`), so they go here. `plaintext`, `listing`,
+ * `noembed`, `noframes`, `noscript`, `iframe` and `pre` decode the entity and build a
+ * real `<b>` element — ordinary elements, and adding them would emit unescaped text.
+ * `<title>` is the third case, decoding entities but not building tags; escaping its
+ * text is what round-trips, so it stays off the list too.
+ */
+export const RAW_TEXT_TAGS: ReadonlySet<string> = new Set([
+	"script",
+	"style",
+	"textarea",
+	"xmp",
+]);
 
 /** Escapes a text node for HTML output. */
 export function escapeText(value: string): string {

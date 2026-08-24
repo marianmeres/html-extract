@@ -29,13 +29,13 @@
 
 import {
 	childNodes,
-	type DomElement,
 	type DomNode,
 	isElement,
 	isText,
 	type ParsedDocument,
 	parseDocument,
 	tag,
+	text,
 } from "./_dom.ts";
 import { assertHtmlString, BLOCK_TAGS, NON_CONTENT_TAGS } from "./_util.ts";
 import type { TextOptions } from "./types.ts";
@@ -101,6 +101,77 @@ function separatorFor(name: string): number {
 }
 
 // ---------------------------------------------------------------------------------
+// character references
+// ---------------------------------------------------------------------------------
+
+/**
+ * Tags whose text the parser hands over with its character references **unresolved**.
+ *
+ * Everything else in this file may assume decoded text, because that is what the parser
+ * normally gives — `<div>Tom &amp; Jerry</div>` arrives as `Tom & Jerry`. `<textarea>`
+ * is the exception: linkedom tokenizes it as raw text, so its `textContent` is the
+ * literal source, and the eight characters `Tom &amp;` would otherwise reach the
+ * extracted plain text of every page with a pre-filled comment box, indistinguishable
+ * from content that really did contain an ampersand.
+ *
+ * HTML5 calls `<textarea>` an *RCDATA* element, and RCDATA does resolve references — so
+ * decoding here restores what the parser owed us rather than inventing a rule.
+ * `<xmp>`, `<iframe>`, `<noembed>` and `<noframes>` are *RAWTEXT*, where `&amp;` really
+ * is five literal characters in every browser, and are deliberately **not** listed:
+ * decoding them would corrupt what the page displays.
+ */
+const UNDECODED_TEXT_TAGS: ReadonlySet<string> = new Set(["textarea"]);
+
+/** The named references an HTML serializer emits. See {@linkcode decodeReferences}. */
+const NAMED_REFERENCES: Readonly<Record<string, string>> = {
+	amp: "&",
+	apos: "'",
+	gt: ">",
+	lt: "<",
+	nbsp: "\u00a0",
+	quot: '"',
+};
+
+/**
+ * Resolves the character references in {@linkcode UNDECODED_TEXT_TAGS} text.
+ *
+ * Deliberately *not* a full HTML5 named-entity table: that table has 2231 entries, it
+ * belongs to the parser, and a second copy of it in a renderer is a copy that drifts.
+ * What is covered is what an encoder actually produces — the five XML names plus
+ * `&nbsp;` — together with every numeric reference, which is the whole long tail
+ * (`&#169;` and `&#xa9;` both come out as `©`). An unrecognized name is left exactly as
+ * it stands: `&copy` without a semicolon is ordinary text far more often than it is a
+ * broken entity.
+ *
+ * Out-of-range and surrogate code points become U+FFFD rather than reaching
+ * `String.fromCodePoint`, which throws a `RangeError` for them — and a throw from here
+ * would break the never-throws contract for a document that only had a typo in it. The
+ * quantifiers in the pattern are bounded for the same class of reason: an unbounded
+ * `\d+` before a literal `;` backtracks over every digit of a run that never ends in
+ * one, and this text comes off the open web.
+ */
+function decodeReferences(value: string): string {
+	if (!value.includes("&")) return value;
+	return value.replace(
+		/&(?:#(\d{1,10})|#[xX]([\da-fA-F]{1,8})|([a-zA-Z]{2,8}));/g,
+		(match, dec: string | undefined, hex: string | undefined, name: string) => {
+			if (dec === undefined && hex === undefined) {
+				return NAMED_REFERENCES[name] ?? match;
+			}
+			const code = dec !== undefined
+				? Number.parseInt(dec, 10)
+				: Number.parseInt(hex!, 16);
+			// U+FFFD for U+0000, the surrogate block and anything past the top of
+			// Unicode — what a real parser does, and what keeps `fromCodePoint`
+			// (which throws a `RangeError` on exactly those) inside the contract
+			const bad = code === 0 || code > 0x10ffff ||
+				(code >= 0xd800 && code <= 0xdfff);
+			return bad ? "\ufffd" : String.fromCodePoint(code);
+		},
+	);
+}
+
+// ---------------------------------------------------------------------------------
 // <pre>
 // ---------------------------------------------------------------------------------
 
@@ -119,8 +190,13 @@ function separatorFor(name: string): number {
  * sitting on its own indented line does not become a dangling blank line. Interior
  * lines, including their indentation and any blank lines between them, come through
  * untouched.
+ *
+ * Exported because `src/to-markdown.ts` needs exactly this for a fenced code block, and
+ * reading `textContent` there instead silently welds every `<br>`-separated line
+ * together. A code block that lost its line breaks is worse than no code block at all,
+ * and a second copy of this walk is a copy that drifts — so there is one copy.
  */
-function preservedText(el: DomElement): string {
+export function preservedText(node: DomNode): string {
 	const parts: string[] = [];
 	/** Pushed onto the stack to mark "a block ended here". */
 	const BLOCK_END = 0;
@@ -131,7 +207,7 @@ function preservedText(el: DomElement): string {
 	};
 
 	const stack: Array<DomNode | number> = [];
-	const roots = childNodes(el);
+	const roots = childNodes(node);
 	for (let i = roots.length - 1; i >= 0; i--) stack.push(roots[i]);
 
 	while (stack.length) {
@@ -149,6 +225,10 @@ function preservedText(el: DomElement): string {
 
 		const name = tag(item);
 		if (!name || NON_CONTENT.has(name)) continue;
+		if (UNDECODED_TEXT_TAGS.has(name)) {
+			parts.push(decodeReferences(text(item)));
+			continue;
+		}
 		if (name === "br") {
 			parts.push("\n");
 			continue;
@@ -161,11 +241,17 @@ function preservedText(el: DomElement): string {
 		for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
 	}
 
+	// `.trimEnd()`, never `.replace(/\s+$/, "")`: that pattern is unanchored, so on
+	// verbatim text holding a long whitespace run followed by anything else the engine
+	// retries the match from every offset in the run — a `<pre>` with 100 000 newlines
+	// and one trailing `x` took ~7 s to render. A hang is worse than a throw, and the
+	// never-throws contract is worth nothing if the call never returns. The two forms
+	// remove exactly the same characters: JS `\s` *is* WhiteSpace plus LineTerminator.
 	return parts
 		.join("")
 		.replace(/\r\n?/g, "\n")
 		.replace(/^\n/, "")
-		.replace(/\s+$/, "");
+		.trimEnd();
 }
 
 // ---------------------------------------------------------------------------------
@@ -266,6 +352,13 @@ export function renderText(node: DomNode, options?: TextOptions): string {
 			continue;
 		}
 
+		// the parser stores this one's text undecoded, and it has no element children
+		// to descend into — read it here so `&amp;` does not reach the output
+		if (UNDECODED_TEXT_TAGS.has(name)) {
+			emitText(decodeReferences(text(item)));
+			continue;
+		}
+
 		if (name === "pre" && preserveCode) {
 			separate(SEP_BLANK);
 			const raw = preservedText(item);
@@ -298,9 +391,12 @@ export function renderText(node: DomNode, options?: TextOptions): string {
 	let result = out.join("");
 	// by construction there is nothing to trim — separators are never written before the
 	// first or after the last chunk — but a `<pre>` at either end is the one case where
-	// trimming would be actively wrong, so guard it and keep the rest as a safety net
-	if (!opensVerbatim) result = result.replace(/^\s+/, "");
-	if (!endsVerbatim) result = result.replace(/\s+$/, "");
+	// trimming would be actively wrong, so guard it and keep the rest as a safety net.
+	// `trimStart`/`trimEnd` rather than `/^\s+/` and `/\s+$/`: same characters removed,
+	// but the trailing pattern backtracks quadratically over a long verbatim whitespace
+	// run — see {@linkcode preservedText}.
+	if (!opensVerbatim) result = result.trimStart();
+	if (!endsVerbatim) result = result.trimEnd();
 
 	logger?.debug(
 		`[html-extract] text: ${result.length} chars, ${preBlocks} <pre> block(s) preserved, ${skipped} non-content element(s) skipped`,
@@ -329,7 +425,10 @@ export function textFromDocument(doc: ParsedDocument, options?: TextOptions): st
  * (leaving U+00A0 in extracted text is a lasting nuisance: it breaks string comparison
  * and shows up as a stray character everywhere downstream), while `<pre>` is passed
  * through verbatim unless {@linkcode TextOptions.preserveCode} is `false`. Entities are
- * already decoded by the parser. `script`, `style`, `noscript`, `template`, `svg`,
+ * already decoded by the parser, `<textarea>` excepted: the parser hands that one over
+ * raw, so its references are resolved here rather than leaking `&amp;` into the text
+ * (`<xmp>` and friends stay literal, which is what a browser shows). `script`, `style`,
+ * `noscript`, `template`, `svg`,
  * `canvas`, comments and `<img alt>` contribute nothing — alt text is a markdown
  * concern.
  *

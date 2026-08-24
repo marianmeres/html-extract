@@ -10,11 +10,14 @@
  * reading the log, since every resolved field is reported together with the source that
  * won it.
  *
- * Two things here are deliberate and easy to undo by accident. Attributes are read
+ * Three things here are deliberate and easy to undo by accident. Attributes are read
  * through {@linkcode attr}, never `getAttribute`, because real markup ships
- * `<META NAME="Description">` and the parser's own lookup is case-sensitive. And
- * JSON-LD is consulted lazily: a document whose metas answer everything must not pay
- * for parsing its `ld+json` blocks.
+ * `<META NAME="Description">` and the parser's own lookup is case-sensitive. JSON-LD is
+ * consulted lazily: a document whose metas answer everything must not pay for parsing
+ * its `ld+json` blocks. And JSON-LD is only half-trusted — its *generic* keys are read
+ * from nodes that describe the page and from nowhere else, so that the `Organization`
+ * block every CMS emits cannot title the page after the publisher; see
+ * {@linkcode splitJsonLdNodes}.
  *
  * @module
  */
@@ -195,11 +198,19 @@ function firstTimeDatetime(doc: ParsedDocument, logger?: Logger): string | undef
  * `@type` values that mark a JSON-LD node as *the page's content* rather than site
  * furniture (`Organization`, `BreadcrumbList`, `WebSite`, `SearchAction`, …).
  *
- * The `\w*article` shape is intentional: `NewsArticle`, `TechArticle` and
- * `ScholarlyArticle` are the same kind of thing as `Article`, and a list of literal
- * names would have to grow forever to keep up with schema.org.
+ * The `\w*` shapes are intentional: `NewsArticle`, `TechArticle` and `ScholarlyArticle`
+ * are the same kind of thing as `Article`, every `…Page` (`FAQPage`, `QAPage`,
+ * `CollectionPage`, `ProfilePage`, …) is a schema.org `WebPage` and therefore *is* this
+ * document, and a list of literal names would have to grow forever to keep up with
+ * schema.org. Note that `WebSite` — the site, not the page — deliberately does not match.
+ *
+ * The list is deliberately conservative rather than exhaustive, because being wrong in
+ * the two directions costs very different amounts: a type missing from it only means the
+ * generic keys fall through to the document's own `<title>` and `<link rel=canonical>`,
+ * which is a good answer, whereas admitting a furniture type means the publisher's name
+ * silently becomes every page's title (see {@linkcode splitJsonLdNodes}).
  */
-const JSON_LD_CONTENT_TYPE = /^(?:\w*article|blogposting|webpage|product|recipe|event)$/;
+const JSON_LD_CONTENT_TYPE = /^(?:\w*article|blogposting|\w*page|product|recipe|event)$/;
 
 /** How deep a value read out of JSON-LD may nest before we stop looking. */
 const JSON_LD_MAX_DEPTH = 3;
@@ -213,20 +224,35 @@ function looksLikeContent(node: Record<string, unknown>): boolean {
 	);
 }
 
+/** The document's JSON-LD nodes, split by whether they describe the document itself. */
+interface JsonLdNodes {
+	/** Nodes whose `@type` looks like page content, in document order. */
+	own: Record<string, unknown>[];
+	/** Every node — {@linkcode JsonLdNodes.own} first, then the furniture. */
+	all: Record<string, unknown>[];
+}
+
 /**
- * Content-ish nodes first, everything else after, both in document order.
+ * Splits the flattened nodes into "this is the page" and "this is the site".
  *
- * Taking the first node blindly is the common bug: a page's first JSON-LD block is
- * routinely an `Organization` or a `BreadcrumbList`, and reading `name` off it would
- * title every article on the site after the publisher.
+ * Ordering alone is not enough, and assuming otherwise is the expensive bug here. On the
+ * CMS baseline of the web the *only* JSON-LD is site furniture — `Organization`,
+ * `WebSite`, `BreadcrumbList` — so a chain that merely sorts and then falls through
+ * reads the publisher's `name` as the page title and the site's homepage `url` as the
+ * page canonical. The second one is the damaging one: a crawler deduping on `canonical`
+ * collapses every page of such a site onto its homepage.
+ *
+ * Hence the split rather than a sort. The generic keys — `name`, `url`, `description`,
+ * `publisher`, `image` — describe whatever node they sit on and are therefore only read
+ * from {@linkcode JsonLdNodes.own}; the keys only a creative work carries — `headline`,
+ * `author`, `datePublished`, `dateModified` — may be read from any node. A node with no
+ * recognisable `@type` counts as furniture: the document's own `<title>` beats a guess.
  */
-function orderJsonLdNodes(
-	nodes: Record<string, unknown>[],
-): Record<string, unknown>[] {
-	const content: Record<string, unknown>[] = [];
+function splitJsonLdNodes(nodes: Record<string, unknown>[]): JsonLdNodes {
+	const own: Record<string, unknown>[] = [];
 	const rest: Record<string, unknown>[] = [];
-	for (const node of nodes) (looksLikeContent(node) ? content : rest).push(node);
-	return [...content, ...rest];
+	for (const node of nodes) (looksLikeContent(node) ? own : rest).push(node);
+	return { own, all: [...own, ...rest] };
 }
 
 /**
@@ -283,17 +309,15 @@ function jsonLdUrl(value: unknown, depth = 0): string | undefined {
 	return undefined;
 }
 
-/** First value any of `keys` yields, node by node, in {@linkcode orderJsonLdNodes} order. */
+/** First value `key` yields, node by node, in the order the given list is already in. */
 function readJsonLd(
 	nodes: Record<string, unknown>[],
-	keys: string[],
+	key: string,
 	read: (value: unknown) => string | undefined,
 ): string | undefined {
 	for (const node of nodes) {
-		for (const key of keys) {
-			const found = read(node[key]);
-			if (found) return found;
-		}
+		const found = read(node[key]);
+		if (found) return found;
 	}
 	return undefined;
 }
@@ -377,19 +401,27 @@ export function metadataFromDocument(
 	const links = (): DomElement[] => (linkCache ??= queryAll(doc.root, "link", logger));
 
 	// JSON-LD is the last fallback before the document's own elements, so it is parsed,
-	// flattened and ordered at most once, and only if some chain gets that far
-	let nodeCache: Record<string, unknown>[] | undefined;
-	const nodes = (): Record<string, unknown>[] => {
+	// flattened and split at most once, and only if some chain gets that far
+	let nodeCache: JsonLdNodes | undefined;
+	const nodes = (): JsonLdNodes => {
 		if (!nodeCache) {
-			nodeCache = orderJsonLdNodes(flattenJsonLd(jsonLdFromDocument(doc, options)));
+			nodeCache = splitJsonLdNodes(flattenJsonLd(jsonLdFromDocument(doc, options)));
 			logger?.debug(
-				`[html-extract] metadata: consulting json-ld (${nodeCache.length} node(s))`,
+				`[html-extract] metadata: consulting json-ld (${nodeCache.all.length} ` +
+					`node(s), ${nodeCache.own.length} content-typed)`,
 			);
 		}
 		return nodeCache;
 	};
-	const ldText = (...keys: string[]) => readJsonLd(nodes(), keys, jsonLdText);
-	const ldUrl = (...keys: string[]) => readJsonLd(nodes(), keys, jsonLdUrl);
+	// `ld*` reads a key that only a creative work carries, from any node; `ldOwn*` reads
+	// a generic key, and so only from a node that looks like the page itself — see
+	// `splitJsonLdNodes` for why that distinction is the whole point
+	const ldText = (key: string): string | undefined =>
+		readJsonLd(nodes().all, key, jsonLdText);
+	const ldOwnText = (key: string): string | undefined =>
+		readJsonLd(nodes().own, key, jsonLdText);
+	const ldOwnUrl = (key: string): string | undefined =>
+		readJsonLd(nodes().own, key, jsonLdUrl);
 
 	const pick = (field: string, chain: ChainStep[]) => firstOf(field, chain, logger);
 
@@ -397,7 +429,7 @@ export function metadataFromDocument(
 		["meta[name=title]", () => meta.title],
 		["og:title", () => openGraph.title],
 		["twitter:title", () => twitter.title],
-		["json-ld headline/name", () => ldText("headline", "name")],
+		["json-ld headline/name", () => ldText("headline") ?? ldOwnText("name")],
 		["<title>", () => titleElementText(doc, logger)],
 		["<h1>", () => text(query(doc.root, "h1", logger))],
 	]));
@@ -406,14 +438,14 @@ export function metadataFromDocument(
 		["meta[name=description]", () => meta.description],
 		["og:description", () => openGraph.description],
 		["twitter:description", () => twitter.description],
-		["json-ld description", () => ldText("description")],
+		["json-ld description", () => ldOwnText("description")],
 	]));
 
 	const canonical = asUrl(
 		pick("canonical", [
 			["<link rel=canonical>", () => linkHref(links(), "canonical")],
 			["og:url", () => openGraph.url],
-			["json-ld url", () => ldUrl("url")],
+			["json-ld url", () => ldOwnUrl("url")],
 		]),
 		base,
 		"canonical",
@@ -429,7 +461,7 @@ export function metadataFromDocument(
 	const siteName = asText(pick("siteName", [
 		["og:site_name", () => openGraph.site_name],
 		["meta[name=application-name]", () => meta["application-name"]],
-		["json-ld publisher", () => ldText("publisher")],
+		["json-ld publisher", () => ldOwnText("publisher")],
 	]));
 
 	const author = asText(pick("author", [
@@ -464,7 +496,7 @@ export function metadataFromDocument(
 			["twitter:image", () => twitter.image],
 			["twitter:image:src", () => twitter["image:src"]],
 			["<link rel=image_src>", () => linkHref(links(), "image_src")],
-			["json-ld image", () => ldUrl("image")],
+			["json-ld image", () => ldOwnUrl("image")],
 		]),
 		base,
 		"image",
@@ -525,8 +557,8 @@ export function metadataFromDocument(
  *
  * Each field is resolved by a fixed chain, first hit wins, blank values never count:
  *
- * - **title** — `meta[name=title]`, `og:title`, `twitter:title`, JSON-LD
- *   `headline`/`name`, `<title>`, first `<h1>`
+ * - **title** — `meta[name=title]`, `og:title`, `twitter:title`, JSON-LD `headline`
+ *   (any node) / `name` (content nodes only, see below), `<title>`, first `<h1>`
  * - **description** — `meta[name=description]`, `og:description`,
  *   `twitter:description`, JSON-LD `description`
  * - **canonical** — `<link rel=canonical>`, `og:url`, JSON-LD `url`
@@ -546,6 +578,15 @@ export function metadataFromDocument(
  *   `rel=apple-touch-icon`, `rel=mask-icon`, and `/favicon.ico` **only** when
  *   {@linkcode MetadataOptions.url} was given
  * - **type** — `og:type`
+ *
+ * JSON-LD is only half-trusted, and knowing which half matters. `headline`, `author`,
+ * `datePublished` and `dateModified` are read from **any** node, because only a creative
+ * work carries them. The generic keys — `name`, `url`, `description`, `publisher`,
+ * `image` — are read **only** from a node whose `@type` names page content (`Article`
+ * and friends, `…Page`, `Product`, `Recipe`, `Event`); on the very common page whose
+ * only JSON-LD is an `Organization`, a `WebSite` or a `BreadcrumbList` they are skipped
+ * entirely, so the publisher's name does not become the title and the site's homepage
+ * does not become every page's `canonical`.
  *
  * Text values are trimmed and whitespace-collapsed. Dates go through
  * {@linkcode "./_util.ts".normalizeDate} — ISO 8601 when parseable, **the raw string

@@ -33,6 +33,11 @@
 > - **`maxSize` truncates rather than rejects.** Rejecting would have meant either
 >   throwing (forbidden by §9) or returning nothing for a document that still carries
 >   perfectly good metadata in its first kilobyte.
+>
+> One correction to the text below: §10's inline-crawl snippet
+> (`onPage: async (res) => extract(await res.text(), …)`) does not compile. The crawler's
+> `PageResult` deliberately carries no body — it is on the second argument, as
+> `ctx.fetchResult`. `README.md` carries the corrected, type-checked form.
 
 > High-level design document for a coding agent. Describes intent, boundaries and the
 > public surface. Internals are the agent's call, but the contracts below are binding.

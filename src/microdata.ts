@@ -34,8 +34,17 @@ const MAX_ITEM_DEPTH = 12;
 /** Default cap on the number of top-level items returned. */
 const DEFAULT_MAX_ITEMS = 1000;
 
-/** Elements whose microdata value is an attribute rather than their text. */
-const VALUE_ATTR: Record<string, string> = {
+/**
+ * Elements whose microdata value is an attribute rather than their text.
+ *
+ * A `Map`, not an object literal, because the lookup key is a tag name straight out of
+ * the document and an object lookup reads through `Object.prototype`: `<constructor
+ * itemprop="p">` is markup a parser happily produces, and `VALUE_ATTR["constructor"]`
+ * used to yield the `Object` function, which is truthy — `attr()` then called
+ * `.toLowerCase()` on it and the whole page died with a `TypeError`. A `Map` has no
+ * inherited entries, so the failure mode is structurally impossible rather than guarded.
+ */
+const VALUE_ATTR: ReadonlyMap<string, string> = new Map(Object.entries({
 	meta: "content",
 	audio: "src",
 	embed: "src",
@@ -51,7 +60,7 @@ const VALUE_ATTR: Record<string, string> = {
 	data: "value",
 	meter: "value",
 	time: "datetime",
-};
+}));
 
 /** Value attributes that hold a URL and are therefore resolved against the base. */
 const URL_VALUE_TAGS: ReadonlySet<string> = new Set([
@@ -77,7 +86,7 @@ const URL_VALUE_TAGS: ReadonlySet<string> = new Set([
  */
 function propertyValue(el: DomElement, base: string | undefined): string {
 	const name = tag(el);
-	const source = VALUE_ATTR[name];
+	const source = VALUE_ATTR.get(name);
 	if (source) {
 		const raw = attr(el, source);
 		if (raw !== undefined && raw !== "") {
@@ -105,7 +114,14 @@ function readItem(
 	base: string | undefined,
 	depth: number,
 ): MicrodataItem {
-	const properties: Record<string, (string | MicrodataItem)[]> = {};
+	// `Object.create(null)`, not `{}`: property names come from the document, so
+	// `properties[name] ??= []` on a plain object reads through `Object.prototype` —
+	// `<span itemprop="toString">` found an inherited function, skipped the assignment
+	// and threw on `.push`, killing extraction of the entire page. A null prototype also
+	// keeps `itemprop="__proto__"` an ordinary key instead of a prototype write (Node
+	// exposes the `__proto__` accessor, Deno does not). `JSON.stringify` and structural
+	// equality are unaffected — both walk own enumerable keys.
+	const properties: Record<string, (string | MicrodataItem)[]> = Object.create(null);
 
 	if (depth < MAX_ITEM_DEPTH) {
 		const stack: DomElement[] = children(el).reverse();
@@ -182,6 +198,11 @@ export function microdataFromDocument(
  * URL-valued attributes (`href`, `src`, `data`) are resolved against
  * {@linkcode MicrodataOptions.url}, with the document's own `<base href>` winning over
  * it. `itemref` is not supported (see the module doc). Never throws.
+ *
+ * `properties` is a **null-prototype** object, so a page that names a property
+ * `toString` or `constructor` yields that property rather than a `TypeError`. Read it
+ * the way you would read any dictionary — `props.name`, `Object.entries(props)`,
+ * `JSON.stringify` — but not with `props.hasOwnProperty(…)`, which no longer inherits.
  *
  * @example
  * ```ts

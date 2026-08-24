@@ -43,8 +43,9 @@ export interface BaseOptions {
 	 * This is a pure library, so nothing is written anywhere unless a logger is
 	 * injected. Pass `console` for a quick look, or a namespaced
 	 * `createClog("html-extract")` for real use. Everything interesting is logged at
-	 * `debug`; only genuinely surprising input (truncation, unparseable JSON-LD,
-	 * invalid selectors) reaches `warn`.
+	 * `debug`; only genuinely surprising input (truncation, an invalid selector you
+	 * passed) reaches `warn`. A malformed JSON-LD block is ordinary and logged at
+	 * `debug`.
 	 */
 	logger?: Logger;
 
@@ -346,25 +347,58 @@ export interface ExtractOptions extends BaseOptions {
  * does not carry it — there are no empty-string placeholders to test against.
  */
 export interface Metadata {
-	/** `<meta property="og:title">` → `<meta name="title">` → `<title>` → first `<h1>`. */
+	/**
+	 * `<meta name="title">` → `og:title` → `twitter:title` → JSON-LD `headline`/`name`
+	 * → `<title>` → first `<h1>`.
+	 */
 	title?: string;
-	/** `<meta name="description">` → `og:description` → `twitter:description`. */
+	/**
+	 * `<meta name="description">` → `og:description` → `twitter:description` → JSON-LD
+	 * `description`.
+	 */
 	description?: string;
-	/** `<link rel="canonical">`, absolute when resolvable. */
+	/**
+	 * `<link rel="canonical">` → `og:url` → JSON-LD `url`. Absolute when resolvable.
+	 */
 	canonical?: string;
 	/** `<html lang>` → `<meta http-equiv="content-language">` → `og:locale`. */
 	lang?: string;
-	/** `og:site_name` → `<meta name="application-name">`. */
+	/**
+	 * `og:site_name` → `<meta name="application-name">` → JSON-LD `publisher.name`.
+	 */
 	siteName?: string;
-	/** `<meta name="author">` → `article:author` → `twitter:creator` → `<link rel="author">`. */
+	/**
+	 * `<meta name="author">` → `article:author` → JSON-LD `author.name` →
+	 * `twitter:creator`.
+	 */
 	author?: string;
-	/** ISO 8601 when the source value could be parsed, otherwise the raw string. */
+	/**
+	 * `article:published_time` → `<meta name="date">` → `<meta name="pubdate">` →
+	 * `<meta name="publish-date">` → `<meta itemprop="datePublished">` → JSON-LD
+	 * `datePublished` → first `<time datetime>`.
+	 *
+	 * ISO 8601 when the source value could be parsed, otherwise the raw string.
+	 */
 	publishedAt?: string;
-	/** ISO 8601 when the source value could be parsed, otherwise the raw string. */
+	/**
+	 * `article:modified_time` → `og:updated_time` → `<meta name="last-modified">` →
+	 * `<meta itemprop="dateModified">` → JSON-LD `dateModified`.
+	 *
+	 * ISO 8601 when the source value could be parsed, otherwise the raw string.
+	 */
 	modifiedAt?: string;
-	/** `og:image` → `twitter:image` → `<link rel="image_src">`, absolute when resolvable. */
+	/**
+	 * `og:image` → `og:image:url` → `twitter:image` → `twitter:image:src` →
+	 * `<link rel="image_src">` → JSON-LD `image`. Absolute when resolvable.
+	 */
 	image?: string;
-	/** `<link rel="icon">` and friends → `/favicon.ico`, absolute when resolvable. */
+	/**
+	 * `<link rel="icon">` → `<link rel="apple-touch-icon">` → `<link rel="mask-icon">`
+	 * → `/favicon.ico` (only when a document URL was given). Absolute when resolvable.
+	 *
+	 * `rel` is matched by token, so `rel="shortcut icon"` is caught by the first step
+	 * and document order decides between them.
+	 */
 	favicon?: string;
 	/** `og:type`. */
 	type?: string;

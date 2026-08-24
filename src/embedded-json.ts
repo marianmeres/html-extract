@@ -16,28 +16,63 @@
 
 import { attr, type ParsedDocument, parseDocument, queryAll, text } from "./_dom.ts";
 import { assertHtmlString } from "./_util.ts";
-import { DEFAULT_EMBEDDED_JSON_KEYS, type EmbeddedJsonOptions } from "./types.ts";
+import {
+	DEFAULT_EMBEDDED_JSON_KEYS,
+	type EmbeddedJsonOptions,
+	type Logger,
+} from "./types.ts";
 
 /** Default cap on the size of a single inline script we are willing to scan. */
 const DEFAULT_MAX_SCRIPT_SIZE = 2_000_000;
 
 /**
- * Reads the balanced `{…}`/`[…]` literal starting at `start`, or `null` if it never
- * closes.
+ * How many characters of a script the scanners may consume per key, as a multiple of the
+ * script's own length.
+ *
+ * `maxScriptSize` bounds a script's *length*, not the *work*: every `KEY = {` whose
+ * literal never closes costs a scan to end-of-source and finds nothing, so a script
+ * repeating that shape is quadratic and a 1.7 MB body — comfortably inside every
+ * documented limit — burned ~20 s of CPU. Charging every scanned character against one
+ * budget makes the scan linear in the script's length. An honest page spends one scan on
+ * its single payload plus a little slack for decoy occurrences, so 4x is far more than it
+ * will ever ask for; a page that wants more than that is not paying us in data.
+ */
+const SCAN_BUDGET_FACTOR = 4;
+
+/** What a scanner found, and how many characters it had to read to find out. */
+interface ScanResult<T> {
+	/** The literal (or its value), or `null` if it never terminated within `limit`. */
+	value: T | null;
+	/** Characters consumed, to be charged against the caller's scan budget. */
+	scanned: number;
+}
+
+/**
+ * Reads the balanced `{…}`/`[…]` literal starting at `start`, or `null` if it does not
+ * close before `limit`.
  *
  * String-aware (and escape-aware inside strings), because a brace inside `"a } b"` is
  * not a brace — the single most common way a naive scanner truncates a payload right in
  * the middle of a product description.
+ *
+ * `limit` is the caller's remaining work budget, not a property of the input: stopping
+ * short only ever costs a payload nobody could parse anyway (see
+ * {@linkcode SCAN_BUDGET_FACTOR}).
  */
-function readJsonLiteral(source: string, start: number): string | null {
+function readJsonLiteral(
+	source: string,
+	start: number,
+	limit: number,
+): ScanResult<string> {
 	const open = source[start];
 	const close = open === "{" ? "}" : open === "[" ? "]" : "";
-	if (!close) return null;
+	if (!close) return { value: null, scanned: 0 };
 
+	const end = Math.min(source.length, limit);
 	let depth = 0;
 	let inString = false;
 	let quote = "";
-	for (let i = start; i < source.length; i++) {
+	for (let i = start; i < end; i++) {
 		const ch = source[i];
 		if (inString) {
 			if (ch === "\\") i++;
@@ -52,10 +87,12 @@ function readJsonLiteral(source: string, start: number): string | null {
 		if (ch === open) depth++;
 		else if (ch === close) {
 			depth--;
-			if (depth === 0) return source.slice(start, i + 1);
+			if (depth === 0) {
+				return { value: source.slice(start, i + 1), scanned: i + 1 - start };
+			}
 		}
 	}
-	return null;
+	return { value: null, scanned: Math.max(0, end - start) };
 }
 
 /**
@@ -68,13 +105,21 @@ function readJsonLiteral(source: string, start: number): string | null {
  * escapes are a subset of JavaScript's, so the few JS-only forms (`\\x41`, `\\0`) simply
  * fail to parse and the blob is skipped, which is the correct outcome for a scanner that
  * must never evaluate its input.
+ *
+ * Budget-bounded like {@linkcode readJsonLiteral}, and for the same reason: an
+ * unterminated quote otherwise runs to end-of-source once per occurrence.
  */
-function readStringLiteral(source: string, start: number): string | null {
+function readStringLiteral(
+	source: string,
+	start: number,
+	limit: number,
+): ScanResult<string> {
 	const quote = source[start];
-	if (quote !== '"' && quote !== "'") return null;
+	if (quote !== '"' && quote !== "'") return { value: null, scanned: 0 };
 
+	const end = Math.min(source.length, limit);
 	let body = "";
-	for (let i = start + 1; i < source.length; i++) {
+	for (let i = start + 1; i < end; i++) {
 		const ch = source[i];
 		if (ch === "\\") {
 			body += ch + (source[i + 1] ?? "");
@@ -87,15 +132,16 @@ function readStringLiteral(source: string, start: number): string | null {
 			const json = quote === '"'
 				? body.replace(/\\'/g, "'")
 				: body.replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/"/g, '\\"');
+			const scanned = i + 1 - start;
 			try {
-				return JSON.parse(`"${json}"`);
+				return { value: JSON.parse(`"${json}"`), scanned };
 			} catch {
-				return null;
+				return { value: null, scanned };
 			}
 		}
 		body += ch;
 	}
-	return null;
+	return { value: null, scanned: Math.max(0, end - start) };
 }
 
 /**
@@ -106,27 +152,47 @@ function readStringLiteral(source: string, start: number): string | null {
  * `KEY = {…}`, `window.KEY = {…}` and `KEY = JSON.parse("…")`. Anything else — most
  * notably Nuxt 2's `__NUXT__=(function(a,b){…})(…)` IIFE — is not JSON and is skipped
  * on purpose rather than evaluated.
+ *
+ * Every occurrence of `key` is retried until one parses, so the scanning is bounded by a
+ * per-key budget (see {@linkcode SCAN_BUDGET_FACTOR}) rather than by the number of
+ * occurrences: a script can otherwise repeat an unbalanced `KEY = {` thousands of times
+ * and make each retry scan to end-of-source. Running out of budget is reported as "no
+ * value", which is what such a script has.
  */
-function findAssignedJson(source: string, key: string): unknown | undefined {
+function findAssignedJson(
+	source: string,
+	key: string,
+	logger?: Logger,
+): unknown | undefined {
 	// the leading guard keeps `SOMETHING__NEXT_DATA__` from matching, but must NOT
 	// exclude `.` — `window.__NEXT_DATA__ = …` is the single most common form there is
 	const pattern = new RegExp(
 		`(?:^|[^\\w$])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=\\s*`,
 		"g",
 	);
+	let budget = source.length * SCAN_BUDGET_FACTOR;
 	let match: RegExpExecArray | null;
 	while ((match = pattern.exec(source)) !== null) {
+		if (budget <= 0) {
+			logger?.warn(
+				`[html-extract] embedded json: ${key} scan budget exhausted after ` +
+					`${source.length * SCAN_BUDGET_FACTOR} char(s), giving up`,
+			);
+			return undefined;
+		}
 		let i = match.index + match[0].length;
 		while (i < source.length && /\s/.test(source[i])) i++;
+		const limit = i + budget;
 
 		// KEY = JSON.parse("…")
 		if (source.startsWith("JSON.parse(", i)) {
 			let j = i + "JSON.parse(".length;
 			while (j < source.length && /\s/.test(source[j])) j++;
-			const literal = readStringLiteral(source, j);
-			if (literal !== null) {
+			const literal = readStringLiteral(source, j, limit);
+			budget -= literal.scanned;
+			if (literal.value !== null) {
 				try {
-					return JSON.parse(literal);
+					return JSON.parse(literal.value);
 				} catch {
 					continue;
 				}
@@ -135,10 +201,11 @@ function findAssignedJson(source: string, key: string): unknown | undefined {
 		}
 
 		// KEY = {…} / KEY = […]
-		const raw = readJsonLiteral(source, i);
-		if (raw === null) continue;
+		const raw = readJsonLiteral(source, i, limit);
+		budget -= raw.scanned;
+		if (raw.value === null) continue;
 		try {
-			return JSON.parse(raw);
+			return JSON.parse(raw.value);
 		} catch {
 			continue;
 		}
@@ -202,7 +269,7 @@ export function embeddedJsonFromDocument(
 			}
 			for (const key of [...pending]) {
 				if (!source.includes(key)) continue;
-				const value = findAssignedJson(source, key);
+				const value = findAssignedJson(source, key, logger);
 				if (value !== undefined) {
 					out[key] = value;
 					pending.delete(key);
@@ -231,8 +298,10 @@ export function embeddedJsonFromDocument(
  * **nothing is ever evaluated** — so payloads that are not JSON (an IIFE, a function
  * call, a template) are skipped rather than misread.
  *
- * Never throws: a key that is absent, unparseable or oversized is simply missing from
- * the result.
+ * Never throws, and never hangs: a key that is absent, unparseable or oversized is
+ * simply missing from the result, and a script crafted so that the scan never finishes
+ * — thousands of unbalanced `KEY = {` starts, each of which would be rescanned to the
+ * end — is abandoned once it has cost more than a few passes over its own length.
  *
  * @example
  * ```ts

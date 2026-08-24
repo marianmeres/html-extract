@@ -158,10 +158,16 @@ input (truncation, an invalid selector you passed).
 Two seams, both of which already exist — no crawler changes required.
 
 **Inline, during the crawl.** `onPage` returns extracted data, which the crawler stores
-in `__crawler_page.data` (JSONB). One pass, no body re-read:
+in `__crawler_page.data` (JSONB). One pass, no body re-read — the body lives on
+`ctx.fetchResult`, because `PageResult` deliberately carries none:
 
 ```typescript
-onPage: (async (res) => extract(await res.text(), { url: res.finalUrl }));
+const options: CrawlOptions = {
+	onPage: async (res, ctx) => {
+		const html = (await ctx.fetchResult?.text()) ?? "";
+		return html ? extract(html, { url: res.finalUrl }) : null;
+	},
+};
 ```
 
 `JSON.stringify` on the result materializes `content.markdown()` and `content.text()`

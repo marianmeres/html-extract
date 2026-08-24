@@ -6,7 +6,7 @@
  * @module
  */
 
-import { attr, type DomElement, isElement, query, queryAll, text } from "./_dom.ts";
+import { attr, type DomElement, isElement, queryAll, text } from "./_dom.ts";
 
 /**
  * Throws for a genuinely wrong argument type.
@@ -61,10 +61,16 @@ export function documentBase(
 	root: DomElement | null | undefined,
 	url?: string,
 ): string | undefined {
-	const declared = attr(query(root, "base"), "href");
-	if (declared) {
+	for (const el of queryAll(root, "base")) {
+		// the spec picks the first `<base>` that *has* an href, not the first `<base>`:
+		// a leading `<base target="_blank">` is legal and must not mask the real one
+		const declared = attr(el, "href")?.trim();
+		if (!declared) continue;
 		const resolved = resolveUrl(declared, url);
 		if (resolved && /^[a-z][a-z0-9+.-]*:/i.test(resolved)) return resolved;
+		// a declared-but-unusable base (relative, with no `url` to resolve it against)
+		// still ends the search — later `<base>` elements are inert in a browser too
+		break;
 	}
 	return url;
 }
@@ -87,25 +93,140 @@ export function collapseBlankLines(value: string): string {
 }
 
 /**
- * Normalizes a date-ish string to ISO 8601, **keeping the raw value when parsing
- * fails**.
+ * ISO 8601: `YYYY-MM`, `YYYY-MM-DD`, optionally followed by `T` (or a space) and
+ * `HH:MM[:SS[.frac]]` and an optional `Z` / `±HH[:]MM` zone.
+ */
+const ISO_SHAPE =
+	/^(\d{4})-(\d{2})(?:-(\d{2}))?(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?\s*(Z|[+-]\d{2}(?::?\d{2})?)?)?$/i;
+
+/**
+ * RFC 2822 / HTTP-date, and **only** with an explicit zone:
+ * `Tue, 12 Mar 2024 06:41:00 GMT`. This is the shape a `Last-Modified` header has when
+ * a page mirrors it into a `<meta>`. Without a zone the value is ambiguous, so it is
+ * kept raw rather than guessed at.
+ */
+const RFC_SHAPE =
+	/^(?:[a-z]{3,9},?\s+)?(\d{1,2})\s+([a-z]{3})[a-z]*\s+(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?\s*(GMT|UTC?|Z|[+-]\d{2}:?\d{2})$/i;
+
+/** Month abbreviations in calendar order, for {@linkcode RFC_SHAPE}. */
+const RFC_MONTHS: readonly string[] = [
+	"jan",
+	"feb",
+	"mar",
+	"apr",
+	"may",
+	"jun",
+	"jul",
+	"aug",
+	"sep",
+	"oct",
+	"nov",
+	"dec",
+];
+
+/**
+ * Minutes to subtract from a wall-clock reading to reach UTC, or `undefined` when the
+ * value carries no zone at all.
+ */
+function zoneOffsetMinutes(zone: string | undefined): number | undefined {
+	if (!zone) return undefined;
+	const z = zone.toUpperCase();
+	if (z === "Z" || z === "GMT" || z === "UTC" || z === "UT") return 0;
+	const m = /^([+-])(\d{2}):?(\d{2})?$/.exec(z);
+	if (!m) return undefined;
+	const minutes = Number(m[2]) * 60 + Number(m[3] ?? 0);
+	return m[1] === "-" ? -minutes : minutes;
+}
+
+/**
+ * Builds the ISO instant for an already-validated set of calendar fields, or
+ * `undefined` when they do not describe a real date.
  *
- * Dropping an unparseable date would be the worse failure: `"March 2024"` is still
- * information, and the caller can decide what to do with it. A value without four
- * consecutive digits is never even handed to `Date.parse`, which is far too eager
- * (`Date.parse("5")` happily returns a date).
+ * Everything is assembled in UTC on purpose: `Date.UTC`/`setUTC*` are the only date
+ * constructors that cannot consult the host timezone, which is what makes the output of
+ * {@linkcode normalizeDate} identical on every machine.
+ */
+function utcInstant(
+	year: number,
+	month: number,
+	day: number,
+	hours: number,
+	minutes: number,
+	seconds: number,
+	millis: number,
+	offsetMinutes: number,
+): string | undefined {
+	if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+	if (hours > 23 || minutes > 59 || seconds > 59) return undefined;
+	// `Date.UTC` folds years 0–99 into 1900–1999; `setUTCFullYear` does not
+	const d = new Date(0);
+	d.setUTCFullYear(year, month - 1, day);
+	d.setUTCHours(hours, minutes, seconds, millis);
+	// a component that moved is a date that does not exist (`2024-02-31` → 2 March)
+	const rolled = d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 ||
+		d.getUTCDate() !== day;
+	if (rolled) return undefined;
+	const ms = d.getTime() - offsetMinutes * 60_000;
+	// unreachable for a 4-digit year, but `toISOString` is the one call here that throws
+	if (!Number.isFinite(ms)) return undefined;
+	return new Date(ms).toISOString();
+}
+
+/**
+ * Normalizes a date-ish string to ISO 8601, **keeping the raw value when it is not a
+ * shape we recognise**.
+ *
+ * Only two shapes are recognised: ISO 8601, and the RFC 2822 / HTTP-date form *with an
+ * explicit zone*. Everything else is returned untouched, for two reasons:
+ *
+ * - Dropping an unparseable date would be the worse failure: `"March 2024"` is still
+ *   information, and the caller can decide what to do with it.
+ * - `Date.parse` must never see it. Outside ISO input it falls back to an
+ *   implementation-defined guess evaluated in the **host** timezone, so
+ *   `"March 5, 2024"` became `2024-03-04T23:00:00.000Z` in `+01:00` and
+ *   `2024-03-05T00:00:00.000Z` in UTC — the same document producing a different
+ *   stored `publishedAt` per machine. It is also far too eager (`Date.parse("5")`
+ *   happily returns a date), and it silently resolves `03/05/2024` to one of the two
+ *   days the world disagrees about.
+ *
+ * A recognised value with no zone (`2024-03-12T06:41`) is read as UTC. That is a guess
+ * too, but a *fixed* one: the publisher's zone is unknowable and the consumer's is
+ * certainly not it, so the output stays stable wherever the library runs.
  */
 export function normalizeDate(raw: string | undefined): string | undefined {
 	const value = typeof raw === "string" ? raw.trim() : "";
 	if (!value) return undefined;
-	if (!/\d{4}/.test(value)) return value;
-	const ms = Date.parse(value);
-	if (Number.isNaN(ms)) return value;
-	try {
-		return new Date(ms).toISOString();
-	} catch {
-		return value;
+
+	const iso = ISO_SHAPE.exec(value);
+	if (iso) {
+		const frac = iso[7] ? Number((iso[7] + "000").slice(0, 3)) : 0;
+		return utcInstant(
+			Number(iso[1]),
+			Number(iso[2]),
+			iso[3] ? Number(iso[3]) : 1,
+			Number(iso[4] ?? 0),
+			Number(iso[5] ?? 0),
+			Number(iso[6] ?? 0),
+			frac,
+			zoneOffsetMinutes(iso[8]) ?? 0,
+		) ?? value;
 	}
+
+	const rfc = RFC_SHAPE.exec(value);
+	if (rfc) {
+		return utcInstant(
+			Number(rfc[3]),
+			RFC_MONTHS.indexOf(rfc[2].toLowerCase()) + 1,
+			Number(rfc[1]),
+			Number(rfc[4]),
+			Number(rfc[5]),
+			Number(rfc[6] ?? 0),
+			0,
+			zoneOffsetMinutes(rfc[7]) ?? 0,
+		) ?? value;
+	}
+
+	return value;
 }
 
 // ---------------------------------------------------------------------------------

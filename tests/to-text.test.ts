@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { renderText, textFromDocument, toText } from "../src/to-text.ts";
+import { preservedText, renderText, textFromDocument, toText } from "../src/to-text.ts";
 import { parseDocument } from "../src/_dom.ts";
 import type { Logger } from "../src/types.ts";
 
@@ -276,4 +276,94 @@ Deno.test("the injected logger explains the result and is silent by default", ()
 
 	// no logger, no output — nothing to assert beyond "it does not blow up"
 	assertEquals(toText("<p>a</p>"), "a");
+});
+
+// ---------------------------------------------------------------------------------
+// regressions
+// ---------------------------------------------------------------------------------
+
+Deno.test("a long verbatim whitespace run does not hang the trailing trim", () => {
+	// `/\s+$/` is unanchored, so on a `<pre>` holding a long whitespace run followed by
+	// anything else it retried from every offset in the run: both of these took ~7 s
+	// before the trim became `.trimEnd()`. A hang is a never-throws violation with worse
+	// manners than a throw, so the budget here is generous but hard.
+	const run = "\n".repeat(100_000);
+
+	// preservedText's own trim
+	let started = performance.now();
+	const pre = toText(`<pre>${run}x</pre>`);
+	const preMs = performance.now() - started;
+	// the leading newline after `<pre>` is formatting, the rest is content
+	assertEquals(pre.length, 100_000);
+	assertEquals(pre.endsWith("\n\nx"), true);
+	assertEquals(preMs < 2000, true, `preservedText took ${preMs.toFixed(0)}ms`);
+
+	// and renderText's, reached whenever the document does not end in a `<pre>`
+	started = performance.now();
+	const doc = toText(`<pre>a${run}b</pre><p>tail</p>`);
+	const docMs = performance.now() - started;
+	assertEquals(doc.startsWith("a\n\n"), true);
+	assertEquals(doc.endsWith("b\n\ntail"), true);
+	assertEquals(docMs < 2000, true, `renderText took ${docMs.toFixed(0)}ms`);
+});
+
+Deno.test("trimming still removes exactly what the old regex removed", () => {
+	// `\s` in a JS regex is WhiteSpace + LineTerminator, which is precisely what
+	// `trimStart`/`trimEnd` remove — including the exotic spaces
+	assertEquals(toText("<p> 　 a   </p>"), "a");
+	assertEquals(toText("<pre>x　  </pre>"), "x");
+	assertEquals(toText("<pre>  x  </pre><p>y</p>"), "  x\n\ny");
+});
+
+Deno.test("<textarea> content arrives decoded, like every other element's", () => {
+	// linkedom parses `<textarea>` as raw text and never resolves its references, so
+	// the undecoded source used to reach the output and be indistinguishable from
+	// content that really did contain an ampersand
+	assertEquals(toText("<textarea>Tom &amp; Jerry</textarea>"), "Tom & Jerry");
+	// the control, which was always right
+	assertEquals(toText("<div>Tom &amp; Jerry</div>"), "Tom & Jerry");
+	assertEquals(
+		toText('<form><textarea name="q">a &lt;b&gt; &quot;c&quot;</textarea></form>'),
+		'a <b> "c"',
+	);
+	// numeric references, decimal and hex, are the long tail
+	assertEquals(toText("<textarea>&#169; &#xa9; &#65;</textarea>"), "© © A");
+	// `&nbsp;` collapses like any other space, U+00A0 included
+	assertEquals(toText("<textarea>a&nbsp;b</textarea>"), "a b");
+	// an unknown name is far more often ordinary text than a broken entity
+	assertEquals(
+		toText("<textarea>Q &copy R &notreal;</textarea>"),
+		"Q &copy R &notreal;",
+	);
+	// exactly one pass — an escaped entity stays escaped, as in a `<div>`
+	assertEquals(toText("<textarea>&amp;amp;</textarea>"), "&amp;");
+	// and inside a `<pre>`, where the text is preserved verbatim
+	assertEquals(toText("<pre>a\n<textarea>&amp;</textarea>\nb</pre>"), "a\n&\nb");
+});
+
+Deno.test("an out-of-range numeric reference degrades instead of throwing", () => {
+	// `String.fromCodePoint` throws a RangeError for these, which would break the
+	// never-throws contract for a document whose only defect is a typo
+	assertEquals(toText("<textarea>&#0;&#xD800;&#x110000;</textarea>"), "���");
+	assertEquals(
+		typeof toText("<textarea>&#99999999999999;&#x;&#;&amp</textarea>"),
+		"string",
+	);
+});
+
+Deno.test("<xmp> and friends stay literal — they are RAWTEXT, not RCDATA", () => {
+	// deliberately *not* decoded: `&amp;` inside `<xmp>` is five characters in every
+	// browser, so decoding it would corrupt what the page actually displays
+	assertEquals(toText("<xmp><b>x</b> &amp; y</xmp>"), "<b>x</b> &amp; y");
+});
+
+Deno.test("preservedText is reachable and keeps <br>-separated lines", () => {
+	// exported for to-markdown's fenced code blocks, where reading `textContent`
+	// instead would silently weld every `<br>`-separated line together
+	const doc = parseDocument("<pre id='p'>a<br>  b<br>c</pre>")!;
+	const pre = doc.body.querySelector("#p")!;
+	assertEquals(preservedText(pre), "a\n  b\nc");
+	// the leading-newline rule, the trailing trim and \r\n normalization all hold
+	const doc2 = parseDocument("<pre id='p'>\r\n  x\r\n  y\r\n</pre>")!;
+	assertEquals(preservedText(doc2.body.querySelector("#p")!), "  x\n  y");
 });

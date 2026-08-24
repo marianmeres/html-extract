@@ -10,6 +10,7 @@ import {
 	queryAll,
 	serialize,
 	serializeChildren,
+	tag,
 	text,
 	unwrap,
 	walkElements,
@@ -134,4 +135,98 @@ Deno.test("walkElements and serialize survive pathological nesting", () => {
 Deno.test("table rows are reachable without an implied tbody", () => {
 	const doc = parseDocument("<table><tr><td>a</td></tr></table>")!;
 	assertEquals(queryAll(doc.body, "tr").length, 1);
+});
+
+// --- regressions -----------------------------------------------------------------
+
+Deno.test("attrs: keeps attributes named like Object.prototype members", () => {
+	// `"constructor" in {}` is true before a single attribute is read, and `__proto__`
+	// is an inherited setter rather than a slot — on a prototyped map both attributes
+	// look like duplicates of something already there and disappear from every
+	// serialization.
+	const html = `<div constructor="c" __proto__="p" toString="t" id="y">hello</div>`;
+	const doc = parseDocument(html)!;
+	// compared as entries on purpose: an object *literal* cannot carry a `__proto__`
+	// key either — the very trap this test is about
+	assertEquals(Object.entries(attrs(query(doc.body, "div")!)), [
+		["constructor", "c"],
+		["__proto__", "p"],
+		["tostring", "t"],
+		["id", "y"],
+	]);
+	assertEquals(
+		serializeChildren(doc.body),
+		`<div constructor="c" __proto__="p" tostring="t" id="y">hello</div>`,
+	);
+});
+
+Deno.test("parseDocument: a real <html> is found however long the preamble is", () => {
+	// the sniff used to look at the first 8 KB only, so an oversized licence comment or
+	// conditional-comment preamble got the document wrapped a second time — and the
+	// synthetic root then answered for `lang`
+	for (const pad of [1, 9000, 40_000]) {
+		const html = `<!--${"x".repeat(pad)}--><html lang="en"><head>` +
+			`<title>T</title></head><body><p>hello</p></body></html>`;
+		const doc = parseDocument(html)!;
+		assertEquals(tag(doc.root), "html", `pad=${pad}`);
+		assertEquals(attr(doc.root, "lang"), "en", `pad=${pad}`);
+		assertEquals(text(doc.body).trim(), "hello", `pad=${pad}`);
+	}
+});
+
+Deno.test("parseDocument: a fragment that only mentions <html> still gets a body", () => {
+	// the textual sniff says "already a document"; the parser's verdict (root is <p>,
+	// not <html>) is the one that counts, and triggers a wrapped re-parse
+	for (
+		const frag of [
+			`<p>hi there</p><script>var s = "<html> ";</script>`,
+			`<p>hi there</p><!-- <html lang="en"> -->`,
+			`<p>hi there</p><div data-tpl="<html >"></div>`,
+		]
+	) {
+		const doc = parseDocument(frag)!;
+		assertEquals(tag(doc.root), "html", frag);
+		assertEquals(text(doc.body).includes("hi there"), true, frag);
+	}
+});
+
+Deno.test("parseDocument: the re-parse keeps an explicit <body> reachable", () => {
+	// the misread input carries its own <body>, so the wrap must not bury it in a
+	// second one — everything in it stays readable either way
+	const doc = parseDocument(`<p>x</p><script>"<html>"</script><body><b>y</b></body>`)!;
+	assertEquals(tag(doc.root), "html");
+	const body = text(doc.body);
+	assertEquals(body.includes("x"), true, body);
+	assertEquals(body.includes("y"), true, body);
+	assertEquals(query(doc.root, "b") !== null, true);
+});
+
+Deno.test("serialize: <textarea> and <xmp> content is not escaped a second time", () => {
+	// linkedom parses both as *raw* text — `textContent` is the undecoded source — so
+	// escaping it again adds an `&amp;` layer per pass and breaks idempotency
+	const cases = [
+		`<form><textarea name="q">Tom &amp; Jerry &lt;3</textarea></form>`,
+		`<xmp><b>x</b> &amp; y</xmp>`,
+	];
+	for (const html of cases) {
+		const once = serializeChildren(parseDocument(html)!.body);
+		const twice = serializeChildren(parseDocument(once)!.body);
+		assertEquals(once, twice, html);
+		assertEquals(once, html, html);
+	}
+	// the raw text really is preserved, not merely stable
+	const doc = parseDocument(cases[0])!;
+	assertEquals(text(query(doc.body, "textarea")!), "Tom &amp; Jerry &lt;3");
+});
+
+Deno.test("serialize: <title> is escaped, because linkedom decodes its entities", () => {
+	// the counterpart of the test above: `<title>` is RCDATA-ish here (entities decoded,
+	// tags not parsed), so escaping is what round-trips — it must stay out of
+	// RAW_TEXT_TAGS or `<b>` would be emitted as live markup
+	const once = serializeChildren(
+		parseDocument(`<title>a &amp; <b>b</b></title>`)!.root,
+	);
+	const twice = serializeChildren(parseDocument(once)!.root);
+	assertEquals(once, twice);
+	assertEquals(once.includes("&lt;b&gt;b&lt;/b&gt;"), true);
 });

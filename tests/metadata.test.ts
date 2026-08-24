@@ -314,6 +314,137 @@ Deno.test("metadata: json-ld content nodes beat site-furniture nodes", () => {
 	assertEquals(extractMetadata(html).title, "Real post");
 });
 
+// The regression the "content nodes beat furniture" test above does *not* catch: with
+// only furniture present there is nothing to beat, and a chain that merely re-orders
+// still falls through to it. On the CMS baseline of the web that is the normal case.
+Deno.test("metadata: furniture-only json-ld never answers a generic key", () => {
+	const org = JSON.stringify({
+		"@context": "https://schema.org",
+		"@type": "Organization",
+		name: "ACME Corp",
+		url: "https://acme.com/",
+		description: "We make things",
+		image: "https://acme.com/logo.png",
+		publisher: { name: "ACME Holding" },
+	});
+	const html = `<html><head><title>How to bake bread — ACME Blog</title>
+		<script type="application/ld+json">${org}</script>
+		</head><body><h1>How to bake bread</h1></body></html>`;
+	const md = extractMetadata(html, { url: "https://acme.com/posts/bread" });
+
+	assertEquals(md.title, "How to bake bread — ACME Blog");
+	// the damaging one: a crawler deduping on `canonical` must not collapse every page
+	// of the site onto its homepage
+	assertEquals(md.canonical, undefined);
+	assertEquals(md.description, undefined);
+	assertEquals(md.siteName, undefined);
+	assertEquals(md.image, undefined);
+});
+
+Deno.test("metadata: the Yoast-shaped @graph is furniture too", () => {
+	const graph = JSON.stringify({
+		"@context": "https://schema.org",
+		"@graph": [
+			{ "@type": "WebSite", name: "ACME Blog", url: "https://acme.com/" },
+			{ "@type": "BreadcrumbList", itemListElement: [] },
+		],
+	});
+	const html = `<html><head><title>How to bake bread — ACME Blog</title>
+		<script type="application/ld+json">${graph}</script>
+		</head><body><h1>How to bake bread</h1></body></html>`;
+	const md = extractMetadata(html, { url: "https://acme.com/posts/bread" });
+
+	assertEquals(md.title, "How to bake bread — ACME Blog");
+	assertEquals(md.canonical, undefined);
+});
+
+Deno.test("metadata: a node with no @type counts as furniture", () => {
+	const html = `<html><head><title>Real title</title>
+		<script type="application/ld+json">{"name":"Guessed","url":"/guessed"}</script>
+		</head></html>`;
+	const md = extractMetadata(html, { url: "https://example.com/page" });
+	assertEquals(md.title, "Real title");
+	assertEquals(md.canonical, undefined);
+});
+
+// The other half of the rule: keys only a creative work carries stay unrestricted, so a
+// loosely-typed block still contributes what it unambiguously means.
+Deno.test("metadata: unambiguous json-ld keys are read from any node", () => {
+	const node = JSON.stringify({
+		"@type": "Organization",
+		name: "ACME Corp",
+		headline: "The actual headline",
+		author: { name: "Jane Doe" },
+		datePublished: "2021-06-07T08:09:10Z",
+		dateModified: "2021-06-08T08:09:10Z",
+	});
+	const html =
+		`<html><head><title>T</title><script type="application/ld+json">${node}</script></head></html>`;
+	const md = extractMetadata(html);
+
+	assertEquals(md.title, "The actual headline");
+	assertEquals(md.author, "Jane Doe");
+	assertEquals(md.publishedAt, "2021-06-07T08:09:10.000Z");
+	assertEquals(md.modifiedAt, "2021-06-08T08:09:10.000Z");
+});
+
+// The shape of tests/fixtures/product-jsonld: furniture first, content second, in one
+// @graph. A Product *is* the page, so its generic keys must still win.
+Deno.test("metadata: a content node later in the graph still answers", () => {
+	const graph = JSON.stringify({
+		"@graph": [
+			{ "@type": "BreadcrumbList", itemListElement: [] },
+			{ "@type": "WebSite", name: "Bergwerk", url: "https://shop.example/" },
+			{
+				"@type": "Product",
+				name: "Klettersteigset Vertigo 2",
+				url: "/p/vertigo-2",
+				description: "Mit Bandfalldämpfer.",
+			},
+		],
+	});
+	const md = extractMetadata(
+		`<html><head><title>Vertigo 2 | Bergwerk</title>
+		<script type="application/ld+json">${graph}</script></head></html>`,
+		{ url: "https://shop.example/p/vertigo-2" },
+	);
+
+	assertEquals(md.title, "Klettersteigset Vertigo 2");
+	assertEquals(md.canonical, "https://shop.example/p/vertigo-2");
+	assertEquals(md.description, "Mit Bandfalldämpfer.");
+});
+
+// `FAQPage`, `QAPage`, `CollectionPage`, … are all schema.org `WebPage`s: they describe
+// this document, so the generic keys may be read off them.
+Deno.test("metadata: every …Page type counts as content", () => {
+	for (const type of ["WebPage", "FAQPage", "CollectionPage", "ProfilePage"]) {
+		const node = JSON.stringify({ "@type": type, name: `${type} name` });
+		const md = extractMetadata(
+			`<html><head><title>T</title><script type="application/ld+json">${node}</script></head></html>`,
+		);
+		assertEquals(md.title, `${type} name`, `${type} should be content`);
+	}
+	// …but the site itself is not the page
+	const site = JSON.stringify({ "@type": "WebSite", name: "WebSite name" });
+	assertEquals(
+		extractMetadata(
+			`<html><head><title>T</title><script type="application/ld+json">${site}</script></head></html>`,
+		).title,
+		"T",
+	);
+});
+
+Deno.test("metadata: the log names the source that won over furniture", () => {
+	const org = JSON.stringify({ "@type": "Organization", name: "ACME Corp" });
+	const { lines, logger } = recorder();
+	extractMetadata(
+		`<html><head><title>Real title</title><script type="application/ld+json">${org}</script></head></html>`,
+		{ logger },
+	);
+	assert(lines.some((l) => l === "[html-extract] metadata: title from <title>"));
+	assert(lines.some((l) => l.includes("node(s), 0 content-typed")));
+});
+
 Deno.test("metadata: odd json-ld shapes never throw", () => {
 	const html = `<html><head>
 		<script type="application/ld+json">[null, 42, "bare string", {"@type": "Article", "headline": 2024, "author": ["Solo"], "image": ["/a.png"]}]</script>
